@@ -248,12 +248,20 @@ async function fetchExplorerJson(url: string): Promise<Result<ExplorerJson>> {
 
 async function fetchAbi(address: Address, chain: ChainId): Promise<Result<Abi>> {
   const cfg = getChainConfig(chain);
-  const apiKey = process.env[cfg.explorerApiKeyEnv];
-  if (!apiKey) {
-    return err("missing_api_key", `${cfg.explorerApiKeyEnv} is not set — cannot verify contracts on ${chain}`);
+
+  let url: string;
+  if (cfg.explorerKind === "etherscan-v2") {
+    const apiKey = cfg.explorerApiKeyEnv ? process.env[cfg.explorerApiKeyEnv] : undefined;
+    if (!apiKey) {
+      return err("missing_api_key", `${cfg.explorerApiKeyEnv} is not set — cannot verify contracts on ${chain}`);
+    }
+    url = `${cfg.explorerApiUrl}?module=contract&action=getabi&address=${address}&chainid=${cfg.explorerChainParam}&apikey=${encodeURIComponent(apiKey)}`;
+  } else {
+    // Blockscout's Etherscan-compatible /api endpoint — no key needed on
+    // the public tier for either Robinhood Chain or Ink.
+    url = `${cfg.explorerApiUrl}?module=contract&action=getabi&address=${address}`;
   }
 
-  const url = `${cfg.explorerApiUrl}?module=contract&action=getabi&address=${address}&chainid=${cfg.explorerChainParam}&apikey=${encodeURIComponent(apiKey)}`;
   const res = await fetchExplorerJson(url);
   if (!res.ok) return res;
 

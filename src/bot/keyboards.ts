@@ -37,6 +37,7 @@ export function walletMenuKeyboard(wallets: WalletInfo[]): InlineKeyboard {
 export function walletDetailKeyboard(walletId: string, isActive: boolean): InlineKeyboard {
   return new InlineKeyboard()
     .text(isActive ? "⏸ Deactivate" : "▶️ Activate", `wallettoggle_${walletId}`).row()
+    .text("⚡ Use for Auto-Mint", `automintset_${walletId}`).row()
     .text("⚠️ Export Private Key", `walletexport_${walletId}`).row()
     .text("🗑 Delete Wallet", `walletdelete_${walletId}`).row()
     .text("💼 Back to Wallets", "wallet_menu");
@@ -53,6 +54,16 @@ export function deleteConfirmKeyboard(walletId: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("❌ Cancel", `walletview_${walletId}`)
     .text("🗑 Confirm Delete", `walletdeleteconfirm_${walletId}`);
+}
+
+export function mintWalletPickKeyboard(contractAddress: string, chain: ChainId, wallets: WalletInfo[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  const active = wallets.filter((w) => w.isActive);
+  for (const w of active) {
+    kb.text(`💼 ${w.label} — ${shortenAddress(w.address)}`, `mintexec_${contractAddress}_${chain}_${w.id}`).row();
+  }
+  kb.text("❌ Cancel", `scan_${contractAddress}_${chain}`);
+  return kb;
 }
 
 export function backToMainKeyboard(): InlineKeyboard {

@@ -2,6 +2,7 @@ import { Bot } from "grammy";
 import { handleCallback, handleText, runScan } from "./handlers.js";
 import { backToMainKeyboard, mainMenuKeyboard } from "./keyboards.js";
 import { getDefaultChainId, type ChainId, allChainIds } from "../core/chains.js";
+import { ensureUser, subscribeToChain, unsubscribeFromChain, getSubscribedChains } from "../core/subscriptions.js";
 
 export function createBot(): Bot {
   const token = process.env.BOT_TOKEN;
@@ -10,12 +11,16 @@ export function createBot(): Bot {
   const bot = new Bot(token);
 
   bot.command("start", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await ensureUser(telegramId).catch((cause) => console.error("ensureUser error:", cause));
+
     await ctx.reply(
       "👋 Welcome to Freemint-Bot v2!\n\n" +
         "I scan NFT contracts across multiple EVM chains for genuinely open " +
         "free mints — verified against real on-chain state, not guessed from " +
         "function names.\n\n" +
-        "Send a contract address, or use /scan <address> [chain]\n\n" +
+        "Send a contract address, or use /scan <address> [chain]\n" +
+        "Use /subscribe <chain> to get live alerts for that chain.\n\n" +
         "Use the menu below to get started.",
       { reply_markup: mainMenuKeyboard() }
     );
@@ -25,7 +30,10 @@ export function createBot(): Bot {
     await ctx.reply(
       "🤖 Freemint-Bot help\n\n" +
         "/scan <address> [chain] — scan a contract for a free mint\n" +
-        "Chains: ethereum, base, arbitrum, optimism (default: base)\n\n" +
+        "/subscribe <chain> — get live alerts when a free mint is found on that chain\n" +
+        "/unsubscribe <chain> — stop alerts for that chain\n" +
+        "/mysubs — show your current subscriptions\n" +
+        "Chains: base, robinhood, ink (default: base)\n\n" +
         "Note: this bot only acts on genuinely open public mints. It does " +
         "not attempt to bypass allowlist/signature-gated mints.",
       { reply_markup: backToMainKeyboard() }
@@ -47,6 +55,34 @@ export function createBot(): Bot {
     }
 
     await runScan(ctx, address, chainArg);
+  });
+
+  bot.command("subscribe", async (ctx) => {
+    const chainArg = (ctx.match || "").toString().trim() as ChainId;
+    if (!allChainIds().includes(chainArg)) {
+      await ctx.reply(`Usage: /subscribe <chain>\nValid: ${allChainIds().join(", ")}`);
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await subscribeToChain(telegramId, chainArg);
+    await ctx.reply(`✅ Subscribed to live free-mint alerts on ${chainArg}.`);
+  });
+
+  bot.command("unsubscribe", async (ctx) => {
+    const chainArg = (ctx.match || "").toString().trim() as ChainId;
+    if (!allChainIds().includes(chainArg)) {
+      await ctx.reply(`Usage: /unsubscribe <chain>\nValid: ${allChainIds().join(", ")}`);
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await unsubscribeFromChain(telegramId, chainArg);
+    await ctx.reply(`Unsubscribed from ${chainArg}.`);
+  });
+
+  bot.command("mysubs", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const chains = await getSubscribedChains(telegramId);
+    await ctx.reply(chains.length ? `Subscribed to: ${chains.join(", ")}` : "No active subscriptions. Use /subscribe <chain>.");
   });
 
   bot.on("callback_query:data", handleCallback);

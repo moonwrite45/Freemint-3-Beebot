@@ -3,6 +3,7 @@ import { handleCallback, handleText, runScan } from "./handlers.js";
 import { backToMainKeyboard, mainMenuKeyboard } from "./keyboards.js";
 import { getDefaultChainId, type ChainId, allChainIds } from "../core/chains.js";
 import { ensureUser, subscribeToChain, unsubscribeFromChain, getSubscribedChains } from "../core/subscriptions.js";
+import { disableAutoMint, getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
 
 export function createBot(): Bot {
   const token = process.env.BOT_TOKEN;
@@ -83,6 +84,41 @@ export function createBot(): Bot {
     const telegramId = BigInt(ctx.from?.id ?? 0);
     const chains = await getSubscribedChains(telegramId);
     await ctx.reply(chains.length ? `Subscribed to: ${chains.join(", ")}` : "No active subscriptions. Use /subscribe <chain>.");
+  });
+
+  bot.command("automintoff", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await disableAutoMint(telegramId);
+    await ctx.reply("⏸ Auto-mint disabled.");
+  });
+
+  bot.command("automintstatus", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const config = await getAutoMintConfig(telegramId);
+    if (!config || !config.enabled) {
+      await ctx.reply("Auto-mint is off. Enable it from a wallet's menu (💼 My Wallets → pick a wallet → ⚡ Use for Auto-Mint).");
+      return;
+    }
+    await ctx.reply(
+      `⚡ Auto-mint is ON.\nGas cap: ${config.maxGasGwei != null ? `${config.maxGasGwei} gwei` : "none set"}.`
+    );
+  });
+
+  bot.command("setgaslimit", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const arg = (ctx.match || "").toString().trim();
+    const gwei = Number(arg);
+    if (!arg || Number.isNaN(gwei) || gwei <= 0) {
+      await ctx.reply("Usage: /setgaslimit <gwei>\nExample: /setgaslimit 5");
+      return;
+    }
+    const config = await getAutoMintConfig(telegramId);
+    if (!config) {
+      await ctx.reply("Enable auto-mint first from a wallet's menu, then set your gas limit.");
+      return;
+    }
+    await enableAutoMint(telegramId, config.walletId, gwei);
+    await ctx.reply(`✅ Gas cap set to ${gwei} gwei. Mints will be skipped if gas exceeds this.`);
   });
 
   bot.on("callback_query:data", handleCallback);

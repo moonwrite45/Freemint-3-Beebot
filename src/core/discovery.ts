@@ -19,14 +19,25 @@ import type { ScanResult } from "./scanner.js";
 export interface VerifiedAlert {
   scan: ScanResult;
   chain: ChainId;
-  source: "onchain_new_contract" | "onchain_mint_call";
+  source: "onchain_new_contract" | "onchain_mint_call" | "mintgo_fun";
   /** Telegram ids of users actually subscribed to this chain — never empty when delivered. */
   recipients: bigint[];
 }
 
 export type AlertCallback = (alert: VerifiedAlert) => Promise<void>;
 
-export function createDiscoveryWatcher(onAlert: AlertCallback): ChainWatcher {
+/**
+ * A ChainWatcher plus one extra entry point for candidates that don't
+ * come from the block listener — e.g. mintgo.fun's poller. Both paths
+ * share the same seen-set and the same real scanner.ts verification, so
+ * a contract found by one source is never re-alerted by the other, and
+ * neither source can shortcut the "verify before alert" rule.
+ */
+export interface DiscoveryEngine extends ChainWatcher {
+  checkExternalCandidate(contractAddress: string, chain: ChainId, source: VerifiedAlert["source"]): Promise<void>;
+}
+
+export function createDiscoveryWatcher(onAlert: AlertCallback): DiscoveryEngine {
   const seen = new SeenContracts();
 
   async function handleCandidate(contractAddress: string, chain: ChainId, source: VerifiedAlert["source"]): Promise<void> {
@@ -66,6 +77,9 @@ export function createDiscoveryWatcher(onAlert: AlertCallback): ChainWatcher {
       if (tx.to && MINT_SELECTORS.has(selector)) {
         await handleCandidate(tx.to, chain, "onchain_mint_call");
       }
+    },
+    async checkExternalCandidate(contractAddress, chain, source) {
+      await handleCandidate(contractAddress, chain, source);
     },
   };
 }

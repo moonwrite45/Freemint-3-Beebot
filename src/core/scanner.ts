@@ -154,6 +154,25 @@ async function tryReadOnchainPrice(
  * mint is callable for free right now — not a name guess. If it reverts,
  * we decode and surface the real reason instead of masking it.
  */
+/**
+ * Builds real call args for a mint candidate. Exported so auto-mint.ts
+ * uses the EXACT same logic that was already exercised by dryRunMint —
+ * not a second hand-copied version that could quietly drift from what
+ * was actually verified.
+ */
+export function buildCandidateArgs(candidate: MintCandidate, callerAddress: Address): unknown[] {
+  return candidate.args.map((type) => {
+    const t = type.toLowerCase().trim();
+    if (t.endsWith("[]")) return [];
+    if (t.startsWith("uint") || t.startsWith("int")) return 1n;
+    if (t === "address") return callerAddress;
+    if (t === "bool") return true;
+    if (t.startsWith("bytes")) return "0x" as Hex;
+    if (t === "string") return "";
+    return 0n;
+  });
+}
+
 async function dryRunMint(
   client: PublicClient,
   contractAddress: Address,
@@ -165,16 +184,7 @@ async function dryRunMint(
       `function ${candidate.name}(${candidate.args.join(",")})`,
     ] as const);
 
-    const args = candidate.args.map((type) => {
-      const t = type.toLowerCase().trim();
-      if (t.endsWith("[]")) return [];
-      if (t.startsWith("uint") || t.startsWith("int")) return 1n;
-      if (t === "address") return fromAddress;
-      if (t === "bool") return true;
-      if (t.startsWith("bytes")) return "0x" as Hex;
-      if (t === "string") return "";
-      return 0n;
-    });
+    const args = buildCandidateArgs(candidate, fromAddress);
 
     const data = encodeFunctionData({
       abi: abiItem,

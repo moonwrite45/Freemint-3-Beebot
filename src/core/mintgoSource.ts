@@ -1,62 +1,114 @@
 /**
- * mintgo.fun discovery source — INCOMPLETE BY DESIGN, read this before using.
+ * mintgo.fun discovery source.
  *
- * mintgo.fun is a client-rendered dashboard (confirmed by fetching it: the
- * page ships almost no static content, just a shell that a JS bundle fills
- * in with "Trending" / "New Mints" / "Runners" panels). That means its real
- * data comes from an API call made *after* the page loads in a browser,
- * and I have no tool that executes JavaScript or inspects live network
- * traffic — so I cannot see what that endpoint actually is, what params
- * it takes, or what shape it returns. Anything I wrote here without that
- * would be a guess dressed up as a working integration, which is exactly
- * the failure mode we're trying to move away from.
+ * Endpoint confirmed real via a browser-side network capture (bookmarklet
+ * hooking fetch/XHR/WebSocket) run by the user directly against
+ * mintgo.fun — not guessed:
  *
- * To finish this module for real, one of the following gets us there:
- *   1. On your phone, open mintgo.fun in a browser that has a network
- *      inspector (Chrome/Kiwi's "Developer options" > remote debugging,
- *      or an app like "HTTP Toolkit") and capture the request the page
- *      makes for "New Mints" — share the URL + response shape.
- *   2. Check if mintgo.fun publishes API docs anywhere (their site footer,
- *      a /docs or /api path, their X/Twitter, or a Discord).
- *   3. If neither works, we drop this as a source and rely on the on-chain
- *      listener + OpenSea eligibility, which are both real and already wired.
+ *   GET https://mintgo.fun/api/seadrop-radar?chain={chain}
  *
- * Until then, this exports a typed interface so the merge/discovery layer
- * can compile against it, and a stub implementation that clearly reports
- * "not configured" rather than silently returning nothing (which would be
- * exactly the kind of ambiguous failure the old bot had elsewhere).
+ * IMPORTANT CHAIN MISMATCH: MintGo's own UI only offers ALL / ETH / RH / INK
+ * as filters — there is no Base option. So this source only ever has data
+ * for two of our three chains (robinhood, ink); it can never surface
+ * anything for base. Calls for chain="base" are skipped entirely rather
+ * than silently sent to an endpoint that doesn't support it.
+ *
+ * What's still unconfirmed: the exact JSON response SHAPE. We have the
+ * real endpoint, not a real captured response body. Parsing below is
+ * deliberately defensive (accepts a few plausible shapes, returns a typed
+ * error if none match) rather than assuming a specific structure I never
+ * actually saw. To finish this for real: extend the same bookmarklet to
+ * log response bodies (not just URLs) for this specific endpoint and
+ * share what comes back — see chat history for the body-logging variant.
  */
 
-import { err, type Result } from "./errors.js";
+import { err, ok, type Result } from "./errors.js";
+import type { ChainId } from "./chains.js";
+
+const MINTGO_BASE_URL = "https://mintgo.fun";
+
+// MintGo's own chain params, confirmed from captured requests. Not the
+// same strings as our internal ChainId in every case (matches for
+// "robinhood"/"ink", has no equivalent for "base").
+const MINTGO_CHAIN_PARAM: Partial<Record<ChainId, string>> = {
+  robinhood: "robinhood",
+  ink: "ink",
+};
 
 export interface MintGoCandidate {
   contractAddress: string;
-  chain: string;
+  chain: ChainId;
   name: string;
   detectedAt: number;
 }
 
-export async function pollMintGo(): Promise<Result<MintGoCandidate[]>> {
-  const endpoint = process.env.MINTGO_API_URL;
-  if (!endpoint) {
-    return err(
-      "missing_api_key",
-      "MINTGO_API_URL is not set — mintgo.fun's real data endpoint hasn't " +
-        "been identified yet (it's a client-rendered dashboard with no " +
-        "documented public API). See the comment at the top of this file " +
-        "for how to find it."
-    );
+interface RawSeadropRadarItem {
+  address?: string;
+  contract?: string;
+  contractAddress?: string;
+  name?: string;
+  title?: string;
+  timestamp?: number;
+  detected_at?: number;
+}
+
+function normalizeCandidate(raw: RawSeadropRadarItem, chain: ChainId): MintGoCandidate | null {
+  const address = raw.address ?? raw.contract ?? raw.contractAddress;
+  if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) return null;
+  return {
+    contractAddress: address,
+    chain,
+    name: raw.name ?? raw.title ?? "Unknown",
+    detectedAt: raw.timestamp ?? raw.detected_at ?? Date.now(),
+  };
+}
+
+export async function pollMintGo(chain: ChainId): Promise<Result<MintGoCandidate[]>> {
+  const chainParam = MINTGO_CHAIN_PARAM[chain];
+  if (!chainParam) {
+    // Not an error — this is the expected, documented case for "base".
+    return ok([]);
   }
 
+  const url = `${MINTGO_BASE_URL}/api/seadrop-radar?chain=${chainParam}`;
+
   try {
-    const res = await fetch(endpoint);
+    const res = await fetch(url);
+    if (res.status === 429) {
+      return err("rate_limited", "mintgo.fun rate-limited this request");
+    }
     if (!res.ok) {
       return err("explorer_unavailable", `mintgo.fun endpoint returned HTTP ${res.status}`);
     }
+
     const data = (await res.json()) as unknown;
-    // Shape unknown until we've confirmed the real endpoint — this cast is
-    // a placeholder, not a verified contract with mintgo.fun's API.
-    return { ok: true, value: (Array.isArray(data) ? data : []) as MintGoCandidate[] };
+
+    // Defensive parsing — shape unconfirmed. Accept either a bare array
+    // or a {results:[...]} / {data:[...]} wrapper, the most common shapes
+    // for an endpoint like this. Anything else surfaces as a typed error
+    // instead of silently returning an empty list that looks like "no
+    // free mints" when really it's "we don't understand the response."
+    const items = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { results?: unknown[] })?.results)
+        ? (data as { results: unknown[] }).results
+        : Array.isArray((data as { data?: unknown[] })?.data)
+          ? (data as { data: unknown[] }).data
+          : null;
+
+    if (items === null) {
+      return err(
+        "unknown",
+        "mintgo.fun response shape didn't match any expected format (bare array, {results:[]}, or {data:[]}) — " +
+          "capture a real response body to fix the parser."
+      );
+    }
+
+    const candidates = (items as RawSeadropRadarItem[])
+      .map((item) => normalizeCandidate(item, chain))
+      .filter((c): c is MintGoCandidate => c !== null);
+
+    return ok(candidates);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     return err("explorer_unavailable", `mintgo.fun request failed: ${message}`, cause);

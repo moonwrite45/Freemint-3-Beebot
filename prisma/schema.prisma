@@ -20,6 +20,8 @@ model User {
   chainSubscriptions ChainSubscription[]
   watchlistEntries   WatchlistEntry[]
   wallets            Wallet[]
+  autoMintConfig     AutoMintConfig?
+  mintAttempts       MintAttempt[]
 }
 
 /// Custodial wallets the bot manages on behalf of a user. Every query
@@ -62,4 +64,40 @@ model WatchlistEntry {
   createdAt       DateTime @default(now())
 
   @@unique([userId, contractAddress, chain])
+}
+
+/// One auto-mint config per user (not per-chain — same wallet/settings
+/// apply everywhere since all our chains are EVM and the wallet works
+/// identically across them). Off by default; enabling it is an explicit
+/// user action, never a side effect of anything else.
+model AutoMintConfig {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id])
+  walletId     String
+  enabled      Boolean  @default(false)
+  /// Safety cap — skip the mint rather than send if current gas price
+  /// exceeds this. Null means no cap (not recommended, UI should warn).
+  maxGasGwei   Float?
+  updatedAt    DateTime @updatedAt
+}
+
+/// History of mint attempts (manual or auto), success or failure. Exists
+/// so a user can see what happened without digging through bot logs, and
+/// so Phase 4's portfolio tracking has a starting point for "what did
+/// this wallet actually mint" without re-deriving it from chain scans.
+model MintAttempt {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  walletId        String
+  contractAddress String
+  chain           String
+  trigger         String   // "manual" | "auto"
+  status          String   // "sent" | "failed"
+  txHash          String?
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId, createdAt])
 }

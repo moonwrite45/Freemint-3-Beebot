@@ -51,7 +51,7 @@ export function watchlistKeyboard(contracts: { address: string; chain: ChainId }
 
 export function chainSelectKeyboard(activeChains: ChainId[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  const all: ChainId[] = ["ethereum", "base", "arbitrum", "optimism"];
+  const all: ChainId[] = ["base", "robinhood", "ink"];
   for (const c of all) {
     const on = activeChains.includes(c);
     kb.text(`${on ? "✅" : "⬜"} ${chainLabel(c)}`, `togglechain_${c}`).row();
@@ -62,19 +62,17 @@ export function chainSelectKeyboard(activeChains: ChainId[]): InlineKeyboard {
 
 function chainLabel(c: ChainId): string {
   switch (c) {
-    case "ethereum": return "Ethereum";
     case "base": return "Base";
-    case "arbitrum": return "Arbitrum";
-    case "optimism": return "Optimism";
+    case "robinhood": return "Robinhood Chain";
+    case "ink": return "Ink";
   }
 }
 
 function explorerUrl(address: string, chain: ChainId): string {
   const bases: Record<ChainId, string> = {
-    ethereum: "https://etherscan.io",
     base: "https://basescan.org",
-    arbitrum: "https://arbiscan.io",
-    optimism: "https://optimistic.etherscan.io",
+    robinhood: "https://robinhoodchain.blockscout.com",
+    ink: "https://explorer.inkonchain.com",
   };
   return `${bases[chain]}/address/${address}`;
 }

@@ -1,10 +1,12 @@
 import "dotenv/config";
 import { createBot } from "./bot/index.js";
-import { startDiscovery, type VerifiedAlert } from "./core/discovery.js";
+import { createDiscoveryWatcher, type VerifiedAlert } from "./core/discovery.js";
+import { createCopyMintWatcher, type CopyMintEvent } from "./core/copyMint.js";
+import { startAllListeners } from "./core/listener.js";
 import { allChainIds } from "./core/chains.js";
 import { scanResultKeyboard } from "./bot/keyboards.js";
-import { getEnabledAutoMintConfigs } from "./core/autoMintConfig.js";
-import { executeMint } from "./core/autoMint.js";
+import { getEnabledAutoMintConfigs, getAutoMintConfig } from "./core/autoMintConfig.js";
+import { executeMint, executeCopyMint } from "./core/autoMint.js";
 
 async function main() {
   const bot = await createBot();
@@ -22,13 +24,9 @@ async function main() {
    * caps out around 30 messages/second globally per bot, so unbounded
    * Promise.all risks 429s — batches of 25 with a short pause between
    * batches stays under that ceiling while still delivering to everyone
-   * within roughly one batch-window instead of a linear chain.
-   *
-   * Auto-mint execution runs the same way — concurrent, bounded batches
-   * — for the same fairness reason, just at the transaction level instead
-   * of the notification level. It's dispatched right alongside the
-   * notification batch, not after it, so auto-mint users aren't waiting
-   * on every notification to finish first.
+   * within roughly one batch-window instead of a linear chain. Auto-mint
+   * and copy-mint execution both follow the same batching pattern, for
+   * the same fairness reason, one level down at the transaction layer.
    */
   const BATCH_SIZE = 25;
   const BATCH_PAUSE_MS = 1000;
@@ -89,17 +87,70 @@ async function main() {
     }
   }
 
-  async function deliverAlert(alert: VerifiedAlert) {
+  async function handleFreeMintAlert(alert: VerifiedAlert) {
     await Promise.all([deliverNotifications(alert), runAutoMints(alert)]);
+  }
+
+  /**
+   * Copy-mint events arrive one at a time (per whale transaction, per
+   * tracker) rather than batched like free-mint alerts, since realistically
+   * only a handful of users track any given whale — but the notify + maybe
+   * execute pattern is the same idea as the free-mint path above.
+   */
+  async function handleCopyMintEvent(event: CopyMintEvent) {
+    await bot.api
+      .sendMessage(
+        Number(event.telegramId),
+        `👀 ${event.tracked.label} (tracked wallet) just minted:\nContract: ${event.contractAddress}\nChain: ${event.chain}\nTx: ${event.txHash}`
+      )
+      .catch((cause) => console.error(`[main] failed to notify copy-mint watch event to ${event.telegramId}:`, cause));
+
+    if (!event.tracked.autoCopy || !event.tracked.maxSpendWei) return;
+
+    const autoMintConfig = await getAutoMintConfig(event.telegramId);
+    if (!autoMintConfig || !autoMintConfig.enabled) {
+      await bot.api
+        .sendMessage(
+          Number(event.telegramId),
+          `⚡ Copy-mint skipped for ${event.tracked.label}: enable auto-mint first (it supplies the wallet copy-mint uses).`
+        )
+        .catch(() => undefined);
+      return;
+    }
+
+    const result = await executeCopyMint(
+      event.telegramId,
+      event.chain,
+      event.contractAddress,
+      event.calldata,
+      event.value,
+      BigInt(event.tracked.maxSpendWei),
+      autoMintConfig.maxGasGwei,
+      autoMintConfig.walletId
+    );
+
+    const text = result.ok
+      ? `⚡ Copied ${event.tracked.label}'s mint!\nContract: ${event.contractAddress}\nTx: ${result.value.txHash}`
+      : `⚡ Copy-mint failed for ${event.tracked.label}: ${result.error.message}`;
+
+    await bot.api
+      .sendMessage(Number(event.telegramId), text)
+      .catch((cause) => console.error(`[main] failed to notify copy-mint result to ${event.telegramId}:`, cause));
   }
 
   // Discovery only watches chains someone has actually configured via
   // env — defaults to every chain we support if unset. Per-user filtering
-  // happens downstream in discovery.ts via real subscriptions, this list
-  // is just "which chains does the listener bother watching at all."
+  // happens downstream via real subscriptions/tracked-wallet ownership,
+  // this list is just "which chains does the listener bother watching."
   const watchedChains = (process.env.WATCHED_CHAINS?.split(",").map((c) => c.trim()) as ReturnType<typeof allChainIds>) ?? allChainIds();
+  const chainsToWatch = watchedChains.length ? watchedChains : allChainIds();
 
-  startDiscovery(watchedChains.length ? watchedChains : allChainIds(), deliverAlert);
+  const discoveryWatcher = createDiscoveryWatcher(handleFreeMintAlert);
+  const copyMintWatcher = createCopyMintWatcher(handleCopyMintEvent);
+
+  // Both watchers share ONE block-polling loop per chain — see listener.ts
+  // for why that matters (RPC load, not just tidiness).
+  startAllListeners(chainsToWatch, [discoveryWatcher, copyMintWatcher]);
 
   await bot.start();
 }

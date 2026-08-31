@@ -1,6 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import { shortenAddress } from "./format.js";
 import type { ChainId } from "../core/chains.js";
+import type { WalletInfo } from "../core/wallet.js";
 
 /**
  * Ported from the old bot's keyboards.ts to keep the same visual layout
@@ -19,7 +20,39 @@ import type { ChainId } from "../core/chains.js";
 export function mainMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔍 Scan Contract", "scan_contract").text("👁 Watchlist", "watchlist").row()
-    .text("⚙️ Chains", "menu_chains").text("📖 Help", "menu_help");
+    .text("💼 My Wallets", "wallet_menu").text("⚙️ Chains", "menu_chains").row()
+    .text("📖 Help", "menu_help");
+}
+
+export function walletMenuKeyboard(wallets: WalletInfo[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const w of wallets) {
+    kb.text(`${w.isActive ? "🟢" : "⚪"} ${w.label} — ${shortenAddress(w.address)}`, `walletview_${w.id}`).row();
+  }
+  kb.text("➕ New Wallet", "wallet_new").text("📥 Import", "wallet_import").row()
+    .text("🏠 Main Menu", "main_menu");
+  return kb;
+}
+
+export function walletDetailKeyboard(walletId: string, isActive: boolean): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(isActive ? "⏸ Deactivate" : "▶️ Activate", `wallettoggle_${walletId}`).row()
+    .text("⚠️ Export Private Key", `walletexport_${walletId}`).row()
+    .text("🗑 Delete Wallet", `walletdelete_${walletId}`).row()
+    .text("💼 Back to Wallets", "wallet_menu");
+}
+
+/** Shown before ever revealing a key — requires an explicit second tap, never a single accidental button press. */
+export function exportConfirmKeyboard(walletId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("❌ Cancel", `walletview_${walletId}`).row()
+    .text("⚠️ Yes, show my private key", `walletexportconfirm_${walletId}`);
+}
+
+export function deleteConfirmKeyboard(walletId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("❌ Cancel", `walletview_${walletId}`)
+    .text("🗑 Confirm Delete", `walletdeleteconfirm_${walletId}`);
 }
 
 export function backToMainKeyboard(): InlineKeyboard {

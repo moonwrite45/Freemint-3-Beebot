@@ -1,55 +1,83 @@
-import { base, mainnet, arbitrum, optimism } from "viem/chains";
-import type { Chain } from "viem";
+import { base } from "viem/chains";
+import { defineChain, type Chain } from "viem";
 
-export type ChainId = "ethereum" | "base" | "arbitrum" | "optimism";
+export type ChainId = "base" | "robinhood" | "ink";
+
+export type ExplorerKind = "etherscan-v2" | "blockscout";
 
 export interface ChainConfig {
   id: ChainId;
   viemChain: Chain;
   rpcEnvVar: string;
   defaultRpcUrl: string;
+  explorerKind: ExplorerKind;
   explorerApiUrl: string;
-  explorerApiKeyEnv: string;
-  /** etherscan v2 unified API chain id param */
-  explorerChainParam: number;
+  /** Only used for etherscan-v2 chains — Blockscout instances here don't require a key. */
+  explorerApiKeyEnv?: string;
+  /** Only used for etherscan-v2's unified API. */
+  explorerChainParam?: number;
 }
 
-export const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
-  ethereum: {
-    id: "ethereum",
-    viemChain: mainnet,
-    rpcEnvVar: "ETH_RPC_URL",
-    defaultRpcUrl: "https://eth.llamarpc.com",
-    explorerApiUrl: "https://api.etherscan.io/v2/api",
-    explorerApiKeyEnv: "ETHERSCAN_API_KEY",
-    explorerChainParam: 1,
+// Robinhood Chain and Ink aren't in every viem release yet (Robinhood
+// Chain mainnet only launched July 2026), so both are defined explicitly
+// here from officially documented values rather than relying on
+// viem/chains possibly having them. Values verified via web search
+// against Robinhood's own docs and Ink's official RPC/explorer — not
+// guessed. Re-verify against docs.robinhood.com/chain and
+// docs.inkonchain.com if these ever need to change; there are known
+// impersonation/fake-explorer risks for newer chains like this.
+const robinhoodChain = defineChain({
+  id: 4663,
+  name: "Robinhood Chain",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: {
+    default: { http: ["https://rpc.mainnet.chain.robinhood.com"] },
   },
+  blockExplorers: {
+    default: { name: "Blockscout", url: "https://robinhoodchain.blockscout.com" },
+  },
+});
+
+const inkChain = defineChain({
+  id: 57073,
+  name: "Ink",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: {
+    default: { http: ["https://rpc-gel.inkonchain.com"] },
+  },
+  blockExplorers: {
+    default: { name: "Blockscout", url: "https://explorer.inkonchain.com" },
+  },
+});
+
+export const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
   base: {
     id: "base",
     viemChain: base,
     rpcEnvVar: "BASE_RPC_URL",
     defaultRpcUrl: "https://mainnet.base.org",
+    explorerKind: "etherscan-v2",
     explorerApiUrl: "https://api.etherscan.io/v2/api",
     explorerApiKeyEnv: "ETHERSCAN_API_KEY",
     explorerChainParam: 8453,
   },
-  arbitrum: {
-    id: "arbitrum",
-    viemChain: arbitrum,
-    rpcEnvVar: "ARBITRUM_RPC_URL",
-    defaultRpcUrl: "https://arb1.arbitrum.io/rpc",
-    explorerApiUrl: "https://api.etherscan.io/v2/api",
-    explorerApiKeyEnv: "ETHERSCAN_API_KEY",
-    explorerChainParam: 42161,
+  robinhood: {
+    id: "robinhood",
+    viemChain: robinhoodChain,
+    rpcEnvVar: "ROBINHOOD_RPC_URL",
+    defaultRpcUrl: "https://rpc.mainnet.chain.robinhood.com",
+    explorerKind: "blockscout",
+    // Blockscout ships an Etherscan-compatible /api endpoint (module/action
+    // params) on every instance — no API key needed for the public tier.
+    explorerApiUrl: "https://robinhoodchain.blockscout.com/api",
   },
-  optimism: {
-    id: "optimism",
-    viemChain: optimism,
-    rpcEnvVar: "OPTIMISM_RPC_URL",
-    defaultRpcUrl: "https://mainnet.optimism.io",
-    explorerApiUrl: "https://api.etherscan.io/v2/api",
-    explorerApiKeyEnv: "ETHERSCAN_API_KEY",
-    explorerChainParam: 10,
+  ink: {
+    id: "ink",
+    viemChain: inkChain,
+    rpcEnvVar: "INK_RPC_URL",
+    defaultRpcUrl: "https://rpc-gel.inkonchain.com",
+    explorerKind: "blockscout",
+    explorerApiUrl: "https://explorer.inkonchain.com/api",
   },
 };
 

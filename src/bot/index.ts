@@ -4,6 +4,7 @@ import { backToMainKeyboard, mainMenuKeyboard } from "./keyboards.js";
 import { getDefaultChainId, type ChainId, allChainIds } from "../core/chains.js";
 import { ensureUser, subscribeToChain, unsubscribeFromChain, getSubscribedChains } from "../core/subscriptions.js";
 import { disableAutoMint, getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
+import { trackWallet, untrackWallet, listTrackedWallets, setAutoCopy } from "../core/copyMint.js";
 
 export function createBot(): Bot {
   const token = process.env.BOT_TOKEN;
@@ -33,7 +34,11 @@ export function createBot(): Bot {
         "/scan <address> [chain] — scan a contract for a free mint\n" +
         "/subscribe <chain> — get live alerts when a free mint is found on that chain\n" +
         "/unsubscribe <chain> — stop alerts for that chain\n" +
-        "/mysubs — show your current subscriptions\n" +
+        "/mysubs — show your current subscriptions\n\n" +
+        "💼 Wallets — 'My Wallets' menu to create/import/export\n" +
+        "/automintstatus, /automintoff, /setgaslimit <gwei>\n\n" +
+        "🎯 Copy-mint — /track <address> [label], /untrack <address>, /mytracked\n" +
+        "/copyon <address> <maxSpendEth>, /copyoff <address>\n\n" +
         "Chains: base, robinhood, ink (default: base)\n\n" +
         "Note: this bot only acts on genuinely open public mints. It does " +
         "not attempt to bypass allowlist/signature-gated mints.",
@@ -119,6 +124,82 @@ export function createBot(): Bot {
     }
     await enableAutoMint(telegramId, config.walletId, gwei);
     await ctx.reply(`✅ Gas cap set to ${gwei} gwei. Mints will be skipped if gas exceeds this.`);
+  });
+
+  bot.command("track", async (ctx) => {
+    const parts = (ctx.match || "").toString().trim().split(/\s+/).filter(Boolean);
+    const address = parts[0];
+    const label = parts.slice(1).join(" ");
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      await ctx.reply("Usage: /track <wallet address> [label]");
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const tracked = await trackWallet(telegramId, address, label || undefined);
+    await ctx.reply(
+      `👀 Now tracking ${tracked.label} (${tracked.trackedAddress}).\n` +
+        `You'll be notified whenever it mints. Use /copyon ${address} <maxSpendEth> to also auto-copy its mints.`
+    );
+  });
+
+  bot.command("untrack", async (ctx) => {
+    const address = (ctx.match || "").toString().trim();
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      await ctx.reply("Usage: /untrack <wallet address>");
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const removed = await untrackWallet(telegramId, address);
+    await ctx.reply(removed ? "Stopped tracking that wallet." : "You weren't tracking that wallet.");
+  });
+
+  bot.command("mytracked", async (ctx) => {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const tracked = await listTrackedWallets(telegramId);
+    if (tracked.length === 0) {
+      await ctx.reply("Not tracking any wallets yet. Use /track <address> [label].");
+      return;
+    }
+    const lines = tracked.map(
+      (t) => `${t.autoCopy ? "⚡" : "👀"} ${t.label} — ${t.trackedAddress}${t.autoCopy ? ` (max ${(Number(t.maxSpendWei) / 1e18).toFixed(4)} ETH)` : ""}`
+    );
+    await ctx.reply(lines.join("\n"));
+  });
+
+  bot.command("copyon", async (ctx) => {
+    const parts = (ctx.match || "").toString().trim().split(/\s+/).filter(Boolean);
+    const address = parts[0];
+    const maxSpendEth = Number(parts[1]);
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address) || !parts[1] || Number.isNaN(maxSpendEth) || maxSpendEth <= 0) {
+      await ctx.reply("Usage: /copyon <tracked address> <maxSpendEth>\nExample: /copyon 0xabc... 0.05");
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    try {
+      await setAutoCopy(telegramId, address, true, maxSpendEth);
+      await ctx.reply(
+        `⚡ Auto-copy enabled for ${address}, up to ${maxSpendEth} ETH per mint.\n\n` +
+          `This uses your auto-mint wallet and gas cap (/automintstatus to check). ` +
+          `Make sure auto-mint is enabled or copies won't execute.`
+      );
+    } catch (cause) {
+      await ctx.reply(`❌ ${cause instanceof Error ? cause.message : "Failed to enable auto-copy."}`);
+    }
+  });
+
+  bot.command("copyoff", async (ctx) => {
+    const address = (ctx.match || "").toString().trim();
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      await ctx.reply("Usage: /copyoff <tracked address>");
+      return;
+    }
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    try {
+      await setAutoCopy(telegramId, address, false, null);
+      await ctx.reply(`Auto-copy disabled for ${address}. Still tracking (notify-only) — use /untrack to stop entirely.`);
+    } catch (cause) {
+      await ctx.reply(`❌ ${cause instanceof Error ? cause.message : "Failed to disable auto-copy."}`);
+    }
   });
 
   bot.on("callback_query:data", handleCallback);

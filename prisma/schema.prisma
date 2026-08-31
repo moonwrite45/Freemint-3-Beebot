@@ -1,0 +1,65 @@
+// Minimal persistence layer — just enough to fix the multi-user gap
+// (per-user chain preferences + watchlist + alert routing) before
+// discovery.ts goes live to more than one person. Wallet/portfolio
+// tables come later in Phase 4 alongside those features.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id         String   @id @default(cuid())
+  telegramId BigInt   @unique
+  createdAt  DateTime @default(now())
+
+  chainSubscriptions ChainSubscription[]
+  watchlistEntries   WatchlistEntry[]
+  wallets            Wallet[]
+}
+
+/// Custodial wallets the bot manages on behalf of a user. Every query
+/// against this table MUST filter by userId as well as wallet id —
+/// looking a wallet up by id alone (the old bot's bug) lets one user's
+/// leaked/guessed wallet id expose another user's private key.
+model Wallet {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  address              String
+  /// AES-256-GCM ciphertext (iv + ciphertext + authTag, hex-encoded) — see walletCrypto.ts
+  encryptedPrivateKey  String
+  label                String
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
+  @@unique([userId, address])
+}
+
+/// Which chains a user wants discovery alerts for. Absence of any row
+/// for a user on a given chain means "not subscribed" — alerts never
+/// default to broadcasting to everyone.
+model ChainSubscription {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  chain     String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, chain])
+}
+
+model WatchlistEntry {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  contractAddress String
+  chain           String
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, contractAddress, chain])
+}

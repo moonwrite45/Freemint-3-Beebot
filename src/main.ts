@@ -3,6 +3,7 @@ import { createBot } from "./bot/index.js";
 import { createDiscoveryWatcher, type VerifiedAlert } from "./core/discovery.js";
 import { createCopyMintWatcher, type CopyMintEvent } from "./core/copyMint.js";
 import { startAllListeners } from "./core/listener.js";
+import { startMintGoPolling } from "./core/mintgoPoller.js";
 import { allChainIds } from "./core/chains.js";
 import { scanResultKeyboard } from "./bot/keyboards.js";
 import { getEnabledAutoMintConfigs, getAutoMintConfig } from "./core/autoMintConfig.js";
@@ -151,6 +152,12 @@ async function main() {
   // Both watchers share ONE block-polling loop per chain — see listener.ts
   // for why that matters (RPC load, not just tidiness).
   startAllListeners(chainsToWatch, [discoveryWatcher, copyMintWatcher]);
+
+  // mintgo.fun as a second discovery source — was fully built in Phase 3
+  // but never actually called from anywhere until now. Feeds the same
+  // discoveryWatcher, so it benefits from the same real verification,
+  // dedupe, and subscriber routing as on-chain discovery.
+  startMintGoPolling(discoveryWatcher);
 
   await bot.start();
 }

@@ -7,8 +7,21 @@ import {
   backToMainKeyboard,
   scanResultKeyboard,
   chainSelectKeyboard,
+  walletMenuKeyboard,
+  walletDetailKeyboard,
+  exportConfirmKeyboard,
+  deleteConfirmKeyboard,
 } from "./keyboards.js";
 import { shortenAddress } from "./format.js";
+import {
+  generateNewWallet,
+  importWallet,
+  getWallets,
+  getWalletByIdForUser,
+  toggleWallet,
+  deleteWallet,
+  getWalletPrivateKey,
+} from "../core/wallet.js";
 
 /**
  * Every branch below shows the person a DIFFERENT message depending on
@@ -80,6 +93,24 @@ export async function handleText(ctx: Context) {
     await runScan(ctx, text, "base");
     return;
   }
+
+  // Looks like a private key (64 hex chars, with or without 0x): treat as
+  // an import attempt. Checked AFTER the 40-char address check above so
+  // the two never collide.
+  if (/^(0x)?[a-fA-F0-9]{64}$/.test(text)) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    try {
+      const wallet = await importWallet(telegramId, text);
+      await ctx.reply(
+        `✅ Wallet imported: ${wallet.label}\n${wallet.address}`,
+        { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Import failed.";
+      await ctx.reply(`❌ ${message}`);
+    }
+    return;
+  }
 }
 
 export async function handleCallback(ctx: Context) {
@@ -113,6 +144,119 @@ export async function handleCallback(ctx: Context) {
 
   if (data === "scan_contract") {
     await ctx.reply("Send the contract address you want to scan (0x...).");
+    return;
+  }
+
+  if (data === "wallet_menu") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallets = await getWallets(telegramId);
+    await ctx.reply(
+      wallets.length
+        ? "💼 Your wallets:"
+        : "💼 No wallets yet. Create one, or import an existing key.",
+      { reply_markup: walletMenuKeyboard(wallets) }
+    );
+    return;
+  }
+
+  if (data === "wallet_new") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallet = await generateNewWallet(telegramId);
+    await ctx.reply(
+      `✅ New wallet created: ${wallet.label}\n${wallet.address}\n\n` +
+        `This wallet is empty — send funds to it before minting anything. ` +
+        `Use "⚠️ Export Private Key" from its menu if you ever need to move funds out.`,
+      { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+    );
+    return;
+  }
+
+  if (data === "wallet_import") {
+    await ctx.reply(
+      "Send the private key to import (0x... or plain 64-char hex).\n\n" +
+        "⚠️ Only import a key you generated for bot use, ideally a burner wallet " +
+        "— never your main wallet's key."
+    );
+    return;
+  }
+
+  const walletViewMatch = data.match(/^walletview_(.+)$/);
+  if (walletViewMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallet = await getWalletByIdForUser(telegramId, walletViewMatch[1]);
+    if (!wallet) {
+      await ctx.reply("Wallet not found.", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+    await ctx.reply(
+      `${wallet.isActive ? "🟢" : "⚪"} ${wallet.label}\n${wallet.address}`,
+      { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+    );
+    return;
+  }
+
+  const walletToggleMatch = data.match(/^wallettoggle_(.+)$/);
+  if (walletToggleMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallet = await toggleWallet(telegramId, walletToggleMatch[1]);
+    if (!wallet) {
+      await ctx.reply("Wallet not found.", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+    await ctx.reply(
+      `${wallet.isActive ? "🟢 Activated" : "⚪ Deactivated"}: ${wallet.label}`,
+      { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+    );
+    return;
+  }
+
+  const walletExportMatch = data.match(/^walletexport_(.+)$/);
+  if (walletExportMatch) {
+    await ctx.reply(
+      "⚠️ Your private key gives full control of this wallet's funds.\n\n" +
+        "It will be sent as a Telegram message, which means it stays in this " +
+        "chat's history unless you delete it yourself afterward. Only continue " +
+        "if you understand that risk.",
+      { reply_markup: exportConfirmKeyboard(walletExportMatch[1]) }
+    );
+    return;
+  }
+
+  const walletExportConfirmMatch = data.match(/^walletexportconfirm_(.+)$/);
+  if (walletExportConfirmMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    try {
+      const key = await getWalletPrivateKey(telegramId, walletExportConfirmMatch[1]);
+      await ctx.reply(
+        `🔑 Private key:\n\`${key}\`\n\n` +
+          `Delete this message once you've saved it somewhere safe.`,
+        { parse_mode: "MarkdownV2", reply_markup: backToMainKeyboard() }
+      );
+    } catch {
+      await ctx.reply("Wallet not found.", { reply_markup: backToMainKeyboard() });
+    }
+    return;
+  }
+
+  const walletDeleteMatch = data.match(/^walletdelete_(.+)$/);
+  if (walletDeleteMatch) {
+    await ctx.reply(
+      "🗑 Delete this wallet from the bot?\n\n" +
+        "This only removes it from the bot's records — it does NOT affect the " +
+        "wallet on-chain. Make sure you've exported the key first if you still " +
+        "need access to any funds in it.",
+      { reply_markup: deleteConfirmKeyboard(walletDeleteMatch[1]) }
+    );
+    return;
+  }
+
+  const walletDeleteConfirmMatch = data.match(/^walletdeleteconfirm_(.+)$/);
+  if (walletDeleteConfirmMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const deleted = await deleteWallet(telegramId, walletDeleteConfirmMatch[1]);
+    await ctx.reply(deleted ? "🗑 Wallet deleted." : "Wallet not found.", {
+      reply_markup: backToMainKeyboard(),
+    });
     return;
   }
 

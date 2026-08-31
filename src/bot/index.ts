@@ -5,6 +5,9 @@ import { getDefaultChainId, type ChainId, allChainIds } from "../core/chains.js"
 import { ensureUser, subscribeToChain, unsubscribeFromChain, getSubscribedChains } from "../core/subscriptions.js";
 import { disableAutoMint, getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
 import { trackWallet, untrackWallet, listTrackedWallets, setAutoCopy } from "../core/copyMint.js";
+import { getWalletByIdForUser, getWalletPrivateKey } from "../core/wallet.js";
+import { checkOpenSeaEligibility } from "../core/openseaEligibility.js";
+import { shortenAddress } from "./format.js";
 
 export function createBot(): Bot {
   const token = process.env.BOT_TOKEN;
@@ -39,6 +42,7 @@ export function createBot(): Bot {
         "/automintstatus, /automintoff, /setgaslimit <gwei>\n\n" +
         "🎯 Copy-mint — /track <address> [label], /untrack <address>, /mytracked\n" +
         "/copyon <address> <maxSpendEth>, /copyoff <address>\n\n" +
+        "🎫 /eligibility <collection-slug> <walletId> — check a wallet's real OpenSea allowlist eligibility\n\n" +
         "Chains: base, robinhood, ink (default: base)\n\n" +
         "Note: this bot only acts on genuinely open public mints. It does " +
         "not attempt to bypass allowlist/signature-gated mints.",
@@ -200,6 +204,65 @@ export function createBot(): Bot {
     } catch (cause) {
       await ctx.reply(`❌ ${cause instanceof Error ? cause.message : "Failed to disable auto-copy."}`);
     }
+  });
+
+  /**
+   * OpenSea allowlist-eligibility check — wires up openseaEligibility.ts,
+   * which was fully built and typechecked in Phase 3 but never called
+   * from anywhere. Deliberately a manual command, not a discovery source:
+   * unlike mintgo.fun, eligibility is inherently wallet+collection specific
+   * (it needs one wallet's key to sign in as that wallet), so there's no
+   * way to fold it into automated discovery that fans out to everyone.
+   */
+  bot.command("eligibility", async (ctx) => {
+    const parts = (ctx.match || "").toString().trim().split(/\s+/).filter(Boolean);
+    const [collectionSlug, walletId] = parts;
+    if (!collectionSlug || !walletId) {
+      await ctx.reply(
+        "Usage: /eligibility <opensea-collection-slug> <walletId>\n" +
+          "Find your walletId by opening a wallet from 💼 My Wallets — it's in that wallet's callback data, " +
+          "or just try each wallet's short id shown there."
+      );
+      return;
+    }
+
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallet = await getWalletByIdForUser(telegramId, walletId);
+    if (!wallet) {
+      await ctx.reply("Wallet not found or not owned by you.");
+      return;
+    }
+
+    const apiKey = process.env.OPENSEA_API_KEY;
+    if (!apiKey) {
+      await ctx.reply("OPENSEA_API_KEY is not configured on this bot — ask the operator to set it.");
+      return;
+    }
+
+    let privateKey: string;
+    try {
+      privateKey = await getWalletPrivateKey(telegramId, walletId);
+    } catch (cause) {
+      await ctx.reply(cause instanceof Error ? cause.message : "Could not access that wallet's key.");
+      return;
+    }
+
+    await ctx.reply("⏳ Checking real eligibility via OpenSea...");
+    const result = await checkOpenSeaEligibility(collectionSlug, wallet.address, privateKey, apiKey);
+
+    if (!result.ok) {
+      await ctx.reply(`❌ ${result.error.message}`);
+      return;
+    }
+    if (result.value.length === 0) {
+      await ctx.reply("No eligibility stages found — this collection may not use gated stages, or the slug is wrong.");
+      return;
+    }
+
+    const lines = result.value.map(
+      (s) => `${s.eligible ? "✅" : "❌"} ${s.stage_type ?? s.stage_uuid}${s.mint_limit ? ` (limit ${s.mint_limit})` : ""}`
+    );
+    await ctx.reply(`Eligibility for ${shortenAddress(wallet.address)} on "${collectionSlug}":\n\n${lines.join("\n")}`);
   });
 
   bot.on("callback_query:data", handleCallback);

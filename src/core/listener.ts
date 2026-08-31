@@ -90,38 +90,56 @@ export class ChainListener {
     const from = this.lastBlock === null ? latest : this.lastBlock + 1n;
     if (from > latest) return; // nothing new yet
 
-    const block = await client.getBlock({ blockNumber: latest, includeTransactions: true });
-    this.lastBlock = latest;
+    // Bug fix: this used to compute `from` and then only ever fetch the
+    // single `latest` block — any block produced between polls (a slow
+    // RPC response, a backoff pause after an error, or just the chain
+    // producing blocks faster than POLL_INTERVAL_MS) was silently never
+    // read, meaning transactions in it were never seen by any watcher.
+    // Now walks the full range, capped so a long outage doesn't try to
+    // replay hundreds of blocks in one burst against a public RPC.
+    const MAX_BLOCKS_PER_POLL = 10n;
+    const rangeEnd = latest - from + 1n > MAX_BLOCKS_PER_POLL ? from + MAX_BLOCKS_PER_POLL - 1n : latest;
+    if (rangeEnd < latest) {
+      console.warn(
+        `[${this.chain}] falling behind — processing blocks ${from}-${rangeEnd} of ${latest}, will catch up over subsequent polls`
+      );
+    }
 
-    const txs = (block.transactions ?? []) as Array<{
-      to: string | null;
-      from: string;
-      hash: string;
-      input: string;
-      value: bigint;
-    }>;
+    for (let blockNumber = from; blockNumber <= rangeEnd; blockNumber++) {
+      const block = await client.getBlock({ blockNumber, includeTransactions: true });
 
-    for (const raw of txs) {
-      const tx: TxInfo = { to: raw.to, from: raw.from, hash: raw.hash, input: raw.input, value: raw.value };
+      const txs = (block.transactions ?? []) as Array<{
+        to: string | null;
+        from: string;
+        hash: string;
+        input: string;
+        value: bigint;
+      }>;
 
-      if (tx.to === null) {
-        const receipt = await client.getTransactionReceipt({ hash: tx.hash as `0x${string}` }).catch(() => null);
-        const contractAddress = receipt?.contractAddress;
-        if (contractAddress) {
-          for (const w of this.watchers) {
-            await w.onNewContract?.(contractAddress, this.chain, tx.hash).catch((cause: unknown) =>
-              console.error(`[${this.chain}] watcher onNewContract error:`, cause)
-            );
+      for (const raw of txs) {
+        const tx: TxInfo = { to: raw.to, from: raw.from, hash: raw.hash, input: raw.input, value: raw.value };
+
+        if (tx.to === null) {
+          const receipt = await client.getTransactionReceipt({ hash: tx.hash as `0x${string}` }).catch(() => null);
+          const contractAddress = receipt?.contractAddress;
+          if (contractAddress) {
+            for (const w of this.watchers) {
+              await w.onNewContract?.(contractAddress, this.chain, tx.hash).catch((cause: unknown) =>
+                console.error(`[${this.chain}] watcher onNewContract error:`, cause)
+              );
+            }
           }
+          continue;
         }
-        continue;
+
+        for (const w of this.watchers) {
+          await w.onTransaction?.(tx, this.chain).catch((cause: unknown) =>
+            console.error(`[${this.chain}] watcher onTransaction error:`, cause)
+          );
+        }
       }
 
-      for (const w of this.watchers) {
-        await w.onTransaction?.(tx, this.chain).catch((cause: unknown) =>
-          console.error(`[${this.chain}] watcher onTransaction error:`, cause)
-        );
-      }
+      this.lastBlock = blockNumber;
     }
   }
 }

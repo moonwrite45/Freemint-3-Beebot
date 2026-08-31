@@ -12,6 +12,7 @@ import {
   exportConfirmKeyboard,
   deleteConfirmKeyboard,
   mintWalletPickKeyboard,
+  watchlistKeyboard,
 } from "./keyboards.js";
 import { shortenAddress } from "./format.js";
 import {
@@ -25,6 +26,8 @@ import {
 } from "../core/wallet.js";
 import { executeMint } from "../core/autoMint.js";
 import { getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
+import { getSubscribedChains, subscribeToChain, unsubscribeFromChain } from "../core/subscriptions.js";
+import { addToWatchlist, removeFromWatchlist, getWatchlist } from "../core/watchlist.js";
 
 /**
  * Every branch below shows the person a DIFFERENT message depending on
@@ -127,8 +130,31 @@ export async function handleCallback(ctx: Context) {
   }
 
   if (data === "menu_chains") {
-    await ctx.reply("⚙️ Active chains — tap to toggle:", {
-      reply_markup: chainSelectKeyboard(allChainIds()),
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    // Bug fix: this used to pass allChainIds() as the "active" set, so
+    // every chain showed a checkmark regardless of what the user actually
+    // subscribed to. Now reflects real subscription state.
+    const subscribed = await getSubscribedChains(telegramId);
+    await ctx.reply("⚙️ Alert subscriptions — tap to toggle:", {
+      reply_markup: chainSelectKeyboard(subscribed),
+    });
+    return;
+  }
+
+  const toggleChainMatch = data.match(/^togglechain_(\w+)$/);
+  if (toggleChainMatch) {
+    const chain = toggleChainMatch[1] as ChainId;
+    if (!allChainIds().includes(chain)) return;
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const subscribed = await getSubscribedChains(telegramId);
+    if (subscribed.includes(chain)) {
+      await unsubscribeFromChain(telegramId, chain);
+    } else {
+      await subscribeToChain(telegramId, chain);
+    }
+    const updated = await getSubscribedChains(telegramId);
+    await ctx.reply("⚙️ Alert subscriptions — tap to toggle:", {
+      reply_markup: chainSelectKeyboard(updated),
     });
     return;
   }
@@ -147,6 +173,40 @@ export async function handleCallback(ctx: Context) {
 
   if (data === "scan_contract") {
     await ctx.reply("Send the contract address you want to scan (0x...).");
+    return;
+  }
+
+  if (data === "watchlist") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const items = await getWatchlist(telegramId);
+    await ctx.reply(
+      items.length ? "👁 Your watchlist:" : "👁 Nothing on your watchlist yet. Scan a contract, then \"Add to Watchlist\".",
+      { reply_markup: watchlistKeyboard(items.map((i) => ({ address: i.contractAddress, chain: i.chain }))) }
+    );
+    return;
+  }
+
+  const addWatchMatch = data.match(/^addwatch_(0x[a-fA-F0-9]{40})_(\w+)$/);
+  if (addWatchMatch) {
+    const [, contractAddress, chain] = addWatchMatch;
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await addToWatchlist(telegramId, contractAddress, chain as ChainId);
+    await ctx.reply(`👁 Added ${shortenAddress(contractAddress)} to your watchlist.`, {
+      reply_markup: scanResultKeyboard(contractAddress, chain as ChainId, false),
+    });
+    return;
+  }
+
+  const rmWatchMatch = data.match(/^rmwatch_(0x[a-fA-F0-9]{40})_(\w+)$/);
+  if (rmWatchMatch) {
+    const [, contractAddress, chain] = rmWatchMatch;
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await removeFromWatchlist(telegramId, contractAddress, chain as ChainId);
+    const items = await getWatchlist(telegramId);
+    await ctx.reply(
+      items.length ? "👁 Your watchlist:" : "👁 Watchlist is now empty.",
+      { reply_markup: watchlistKeyboard(items.map((i) => ({ address: i.contractAddress, chain: i.chain }))) }
+    );
     return;
   }
 
@@ -311,12 +371,23 @@ export async function handleCallback(ctx: Context) {
     const [, contractAddress, chain, walletId] = mintExecMatch;
     const telegramId = BigInt(ctx.from?.id ?? 0);
 
+    const wallet = await getWalletByIdForUser(telegramId, walletId);
+    if (!wallet) {
+      await ctx.reply("Wallet not found or not owned by you.", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+
     await ctx.reply("⏳ Re-verifying and sending — this only takes a moment...");
 
     // Re-scan immediately before spending gas rather than trusting a scan
     // result the user might be looking at from minutes ago — the mint
     // could have sold out or the price could have changed since then.
-    const fresh = await scanContract(contractAddress, chain as ChainId, walletId);
+    // Bug fix: this used to pass walletId itself as the probe address —
+    // a Prisma cuid, not a real address, which isAddress() always rejects.
+    // That silently skipped the dry-run tier on every manual mint and fell
+    // back to the weakest verification signal. Now probes from the wallet's
+    // actual on-chain address, which is what a dry-run needs anyway.
+    const fresh = await scanContract(contractAddress, chain as ChainId, wallet.address);
     if (!fresh.ok || !fresh.value.freeMint) {
       await ctx.reply(
         `❌ Mint no longer verifiable: ${fresh.ok ? "no free mint found on re-check" : describeScanError(fresh.error)}`,

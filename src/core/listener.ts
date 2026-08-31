@@ -1,22 +1,21 @@
 /**
- * On-chain discovery source. Watches new blocks for:
- *   1) new contract creations, and
- *   2) transactions calling a known mint-like function selector
- * and feeds candidates into the (already-fixed) scanner for real
- * verification — this listener only ever proposes candidates, it never
- * itself decides "free or not." That decision stays entirely in
- * scanner.ts, which is the piece we already made honest.
+ * On-chain block watcher. Pluggable-watcher architecture: ONE polling
+ * loop per chain feeds every transaction to a list of ChainWatchers, so
+ * free-mint discovery and whale copy-mint tracking share the same RPC
+ * calls instead of each running an independent poll loop. That matters
+ * concretely here — Robinhood Chain's and Ink's own docs warn against
+ * hammering their public RPC endpoints with bot traffic, so doubling
+ * read load for a second watcher would have been a real cost, not a
+ * theoretical one.
  */
 
 import { getPublicClient } from "./chain.js";
-import { getChainConfig, type ChainId } from "./chains.js";
-import type { SeenContracts } from "./queue.js";
-import { seenKey } from "./queue.js";
+import type { ChainId } from "./chains.js";
 
 // A deliberately small, well-known set of mint-like selectors used only
-// to decide "worth scanning," never "is free" — that call is scanner.ts's
-// alone, using real state reads/dry-runs.
-const MINT_SELECTORS = new Set<string>([
+// to decide "worth looking at further," never "is free" — that call is
+// scanner.ts's alone, using real state reads/dry-runs.
+export const MINT_SELECTORS = new Set<string>([
   "0x1249c58b", // mint()
   "0xa0712d68", // mint(uint256)
   "0x6a627842", // mint(address)
@@ -28,14 +27,20 @@ const MINT_SELECTORS = new Set<string>([
   "0x8d45fc5e", // freeMint()
 ]);
 
-export interface DiscoveryCandidate {
-  contractAddress: string;
-  chain: ChainId;
-  txHash: string;
-  source: "onchain_new_contract" | "onchain_mint_call";
+export interface TxInfo {
+  to: string | null;
+  from: string;
+  hash: string;
+  input: string;
+  value: bigint;
 }
 
-export type CandidateCallback = (candidate: DiscoveryCandidate) => Promise<void>;
+export interface ChainWatcher {
+  /** Called for every transaction in every new block on this chain. */
+  onTransaction?(tx: TxInfo, chain: ChainId): Promise<void>;
+  /** Called specifically for new contract creations (to === null). */
+  onNewContract?(address: string, chain: ChainId, txHash: string): Promise<void>;
+}
 
 const POLL_INTERVAL_MS = 6_000;
 const BASE_RECONNECT_MS = 2_000;
@@ -43,23 +48,21 @@ const MAX_RECONNECT_MS = 30_000;
 
 export class ChainListener {
   private chain: ChainId;
-  private onCandidate: CandidateCallback;
-  private seen: SeenContracts;
+  private watchers: ChainWatcher[];
   private running = false;
   private reconnectDelay = BASE_RECONNECT_MS;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastBlock: bigint | null = null;
 
-  constructor(chain: ChainId, onCandidate: CandidateCallback, seen: SeenContracts) {
+  constructor(chain: ChainId, watchers: ChainWatcher[]) {
     this.chain = chain;
-    this.onCandidate = onCandidate;
-    this.seen = seen;
+    this.watchers = watchers;
   }
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    console.log(`[${this.chain}] listener starting`);
+    console.log(`[${this.chain}] listener starting (${this.watchers.length} watcher(s))`);
     this.pollLoop();
   }
 
@@ -92,39 +95,40 @@ export class ChainListener {
 
     const txs = (block.transactions ?? []) as Array<{
       to: string | null;
+      from: string;
       hash: string;
       input: string;
+      value: bigint;
     }>;
 
-    for (const tx of txs) {
-      // New contract creation: `to` is null.
+    for (const raw of txs) {
+      const tx: TxInfo = { to: raw.to, from: raw.from, hash: raw.hash, input: raw.input, value: raw.value };
+
       if (tx.to === null) {
         const receipt = await client.getTransactionReceipt({ hash: tx.hash as `0x${string}` }).catch(() => null);
         const contractAddress = receipt?.contractAddress;
-        if (contractAddress) await this.emit(contractAddress, tx.hash, "onchain_new_contract");
+        if (contractAddress) {
+          for (const w of this.watchers) {
+            await w.onNewContract?.(contractAddress, this.chain, tx.hash).catch((cause: unknown) =>
+              console.error(`[${this.chain}] watcher onNewContract error:`, cause)
+            );
+          }
+        }
         continue;
       }
 
-      const selector = (tx.input || "0x").slice(0, 10);
-      if (MINT_SELECTORS.has(selector)) {
-        await this.emit(tx.to, tx.hash, "onchain_mint_call");
+      for (const w of this.watchers) {
+        await w.onTransaction?.(tx, this.chain).catch((cause: unknown) =>
+          console.error(`[${this.chain}] watcher onTransaction error:`, cause)
+        );
       }
     }
   }
-
-  private async emit(contractAddress: string, txHash: string, source: DiscoveryCandidate["source"]): Promise<void> {
-    const key = seenKey(this.chain, contractAddress);
-    if (this.seen.has(key)) return;
-    this.seen.add(key);
-    await this.onCandidate({ contractAddress, chain: this.chain, txHash, source }).catch((cause) =>
-      console.error(`[${this.chain}] candidate handler error:`, cause)
-    );
-  }
 }
 
-export function startAllListeners(chains: ChainId[], onCandidate: CandidateCallback, seen: SeenContracts): ChainListener[] {
+export function startAllListeners(chains: ChainId[], watchers: ChainWatcher[]): ChainListener[] {
   return chains.map((chain) => {
-    const listener = new ChainListener(chain, onCandidate, seen);
+    const listener = new ChainListener(chain, watchers);
     listener.start();
     return listener;
   });

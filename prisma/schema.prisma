@@ -22,6 +22,7 @@ model User {
   wallets            Wallet[]
   autoMintConfig     AutoMintConfig?
   mintAttempts       MintAttempt[]
+  trackedWallets     TrackedWallet[]
 }
 
 /// Custodial wallets the bot manages on behalf of a user. Every query
@@ -82,10 +83,32 @@ model AutoMintConfig {
   updatedAt    DateTime @updatedAt
 }
 
-/// History of mint attempts (manual or auto), success or failure. Exists
-/// so a user can see what happened without digging through bot logs, and
-/// so Phase 4's portfolio tracking has a starting point for "what did
-/// this wallet actually mint" without re-deriving it from chain scans.
+/// A whale wallet a user wants to watch. Notification-only by default —
+/// autoCopy is a separate explicit opt-in, same pattern as AutoMintConfig.
+/// Deliberately reuses the user's AutoMintConfig wallet + gas cap for
+/// execution rather than adding a second wallet-selection flow — "your
+/// auto-mint wallet snipes free mints AND copies tracked whales" is one
+/// mental model instead of two.
+model TrackedWallet {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  trackedAddress  String
+  label           String
+  autoCopy        Boolean  @default(false)
+  /// Wei, as a string (avoids float precision loss). Required to enable
+  /// autoCopy — there is no "no cap" option for copy-mint, unlike gas:
+  /// an unbounded spend cap on a wallet you don't control the actions of
+  /// is a materially different risk than an unbounded gas cap.
+  maxSpendWei     String?
+  createdAt       DateTime @default(now())
+
+  @@unique([userId, trackedAddress])
+}
+
+/// History of mint attempts (manual, auto, or copy), success or failure.
+/// Exists so a user can see what happened without digging through bot
+/// logs, and gives Phase 4's portfolio tracking a starting point.
 model MintAttempt {
   id              String   @id @default(cuid())
   userId          String
@@ -93,7 +116,7 @@ model MintAttempt {
   walletId        String
   contractAddress String
   chain           String
-  trigger         String   // "manual" | "auto"
+  trigger         String   // "manual" | "auto" | "copy"
   status          String   // "sent" | "failed"
   txHash          String?
   errorMessage    String?

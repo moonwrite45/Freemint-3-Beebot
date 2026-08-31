@@ -11,6 +11,7 @@ import {
   walletDetailKeyboard,
   exportConfirmKeyboard,
   deleteConfirmKeyboard,
+  mintWalletPickKeyboard,
 } from "./keyboards.js";
 import { shortenAddress } from "./format.js";
 import {
@@ -22,6 +23,8 @@ import {
   deleteWallet,
   getWalletPrivateKey,
 } from "../core/wallet.js";
+import { executeMint } from "../core/autoMint.js";
+import { getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
 
 /**
  * Every branch below shows the person a DIFFERENT message depending on
@@ -257,6 +260,83 @@ export async function handleCallback(ctx: Context) {
     await ctx.reply(deleted ? "🗑 Wallet deleted." : "Wallet not found.", {
       reply_markup: backToMainKeyboard(),
     });
+    return;
+  }
+
+  const autoMintSetMatch = data.match(/^automintset_(.+)$/);
+  if (autoMintSetMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallet = await getWalletByIdForUser(telegramId, autoMintSetMatch[1]);
+    if (!wallet) {
+      await ctx.reply("Wallet not found.", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+    const existing = await getAutoMintConfig(telegramId);
+    await enableAutoMint(telegramId, wallet.id, existing?.maxGasGwei ?? null);
+    await ctx.reply(
+      `⚡ Auto-mint enabled using ${wallet.label} (${shortenAddress(wallet.address)}).\n\n` +
+        `⚠️ This wallet will now automatically attempt every free mint you're subscribed to, ` +
+        `with no per-mint confirmation. Fund it only with what you're willing to spend on gas.\n\n` +
+        `${existing?.maxGasGwei ? `Gas cap: ${existing.maxGasGwei} gwei.` : "No gas cap set — use /setgaslimit <gwei> to add a safety cap."}\n` +
+        `Use /automintoff to disable at any time.`,
+      { reply_markup: backToMainKeyboard() }
+    );
+    return;
+  }
+
+  const mintMatch = data.match(/^mint_(0x[a-fA-F0-9]{40})_(\w+)$/);
+  if (mintMatch) {
+    const [, contractAddress, chain] = mintMatch;
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const wallets = await getWallets(telegramId);
+    const activeWallets = wallets.filter((w) => w.isActive);
+
+    if (activeWallets.length === 0) {
+      await ctx.reply(
+        "You don't have an active wallet yet. Create or import one first.",
+        { reply_markup: walletMenuKeyboard(wallets) }
+      );
+      return;
+    }
+
+    await ctx.reply(
+      "Which wallet should mint this?",
+      { reply_markup: mintWalletPickKeyboard(contractAddress, chain as ChainId, activeWallets) }
+    );
+    return;
+  }
+
+  const mintExecMatch = data.match(/^mintexec_(0x[a-fA-F0-9]{40})_(\w+)_(.+)$/);
+  if (mintExecMatch) {
+    const [, contractAddress, chain, walletId] = mintExecMatch;
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+
+    await ctx.reply("⏳ Re-verifying and sending — this only takes a moment...");
+
+    // Re-scan immediately before spending gas rather than trusting a scan
+    // result the user might be looking at from minutes ago — the mint
+    // could have sold out or the price could have changed since then.
+    const fresh = await scanContract(contractAddress, chain as ChainId, walletId);
+    if (!fresh.ok || !fresh.value.freeMint) {
+      await ctx.reply(
+        `❌ Mint no longer verifiable: ${fresh.ok ? "no free mint found on re-check" : describeScanError(fresh.error)}`,
+        { reply_markup: backToMainKeyboard() }
+      );
+      return;
+    }
+
+    const config = await getAutoMintConfig(telegramId);
+    const result = await executeMint(telegramId, walletId, fresh.value, chain as ChainId, "manual", config?.maxGasGwei ?? null);
+
+    if (!result.ok) {
+      await ctx.reply(`❌ Mint failed: ${result.error.message}`, { reply_markup: backToMainKeyboard() });
+      return;
+    }
+
+    await ctx.reply(
+      `✅ Mint transaction sent!\nTx: ${result.value.txHash}`,
+      { reply_markup: backToMainKeyboard() }
+    );
     return;
   }
 

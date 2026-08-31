@@ -1,12 +1,11 @@
 /**
- * Executes a real mint transaction. This is the highest-stakes piece of
- * code in the whole bot — it decrypts a private key and spends real gas.
- * Every safety measure that exists elsewhere in this codebase converges
- * here:
+ * Executes real mint transactions. This is the highest-stakes code in
+ * the whole bot — it decrypts a private key and spends real gas. Every
+ * safety measure elsewhere in this codebase converges here:
  *   - wallet.ts's ownership check (can't touch a wallet you don't own)
  *   - gasGuard.ts's live price check (never send blind into a gas spike)
  *   - scanner.ts's buildCandidateArgs (same args already proven via
- *     dry-run, not a second hand-written copy)
+ *     dry-run, not a second hand-written copy) — for executeMint only
  *   - every outcome recorded to MintAttempt, success or failure, so
  *     nothing silently disappears the way the old bot's failures did
  */
@@ -36,9 +35,9 @@ async function resolveUserId(telegramId: bigint): Promise<string> {
 async function recordAttempt(
   telegramId: bigint,
   walletId: string,
-  scan: ScanResult,
+  contractAddress: string,
   chain: ChainId,
-  trigger: "manual" | "auto",
+  trigger: "manual" | "auto" | "copy",
   outcome: { status: "sent"; txHash: string } | { status: "failed"; errorMessage: string }
 ): Promise<void> {
   const userId = await resolveUserId(telegramId);
@@ -47,7 +46,7 @@ async function recordAttempt(
       data: {
         userId,
         walletId,
-        contractAddress: scan.contractAddress,
+        contractAddress,
         chain,
         trigger,
         status: outcome.status,
@@ -87,7 +86,7 @@ export async function executeMint(
 
   const gasCheck = await checkGasPrice(client, maxGasGwei);
   if (!gasCheck.ok) {
-    await recordAttempt(telegramId, walletId, scan, chain, trigger, {
+    await recordAttempt(telegramId, walletId, scan.contractAddress, chain, trigger, {
       status: "failed",
       errorMessage: gasCheck.error.message,
     });
@@ -99,7 +98,7 @@ export async function executeMint(
     privateKey = await getWalletPrivateKey(telegramId, walletId);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Could not access wallet key.";
-    await recordAttempt(telegramId, walletId, scan, chain, trigger, { status: "failed", errorMessage: message });
+    await recordAttempt(telegramId, walletId, scan.contractAddress, chain, trigger, { status: "failed", errorMessage: message });
     return err("unknown", message, cause);
   }
 
@@ -123,11 +122,81 @@ export async function executeMint(
       chain: walletClient.chain,
     });
 
-    await recordAttempt(telegramId, walletId, scan, chain, trigger, { status: "sent", txHash });
+    await recordAttempt(telegramId, walletId, scan.contractAddress, chain, trigger, { status: "sent", txHash });
     return ok({ txHash });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
-    await recordAttempt(telegramId, walletId, scan, chain, trigger, { status: "failed", errorMessage: message });
+    await recordAttempt(telegramId, walletId, scan.contractAddress, chain, trigger, { status: "failed", errorMessage: message });
     return err("unknown", `Mint transaction failed: ${message}`, cause);
+  }
+}
+
+/**
+ * Copy-mint execution — replays a tracked whale's exact calldata and
+ * value (up to the user's configured spend cap) via their designated
+ * auto-mint wallet. Deliberately does NOT re-derive or decode the
+ * whale's transaction into a reconstructed function call the way
+ * scanner.ts does for free-mint detection — it just resends the literal
+ * bytes the whale sent, to the same contract, which is a more faithful
+ * "copy" than trying to re-encode arguments (and sidesteps any bugs in
+ * that re-encoding entirely).
+ */
+export async function executeCopyMint(
+  telegramId: bigint,
+  chain: ChainId,
+  contractAddress: string,
+  calldata: string,
+  value: bigint,
+  maxSpendWei: bigint,
+  maxGasGwei: number | null,
+  walletId: string
+): Promise<Result<MintExecutionResult>> {
+  if (value > maxSpendWei) {
+    return err(
+      "unknown",
+      `Whale's mint costs ${value.toString()} wei, which exceeds your configured max spend ` +
+        `(${maxSpendWei.toString()} wei). Copy skipped.`
+    );
+  }
+
+  const wallet = await getWalletByIdForUser(telegramId, walletId);
+  if (!wallet) return err("unknown", "Auto-mint wallet not found or not owned by you.");
+  if (!wallet.isActive) return err("unknown", "Your auto-mint wallet is deactivated.");
+
+  const client = getPublicClient(chain);
+  const gasCheck = await checkGasPrice(client, maxGasGwei);
+  if (!gasCheck.ok) {
+    await recordAttempt(telegramId, walletId, contractAddress, chain, "copy", { status: "failed", errorMessage: gasCheck.error.message });
+    return gasCheck;
+  }
+
+  let privateKey: string;
+  try {
+    privateKey = await getWalletPrivateKey(telegramId, walletId);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "Could not access wallet key.";
+    await recordAttempt(telegramId, walletId, contractAddress, chain, "copy", { status: "failed", errorMessage: message });
+    return err("unknown", message, cause);
+  }
+
+  const walletClient = getWalletClient(privateKey as Hex, chain);
+  const account = walletClient.account;
+  if (!account) return err("unknown", "Wallet client has no account attached — this should never happen.");
+
+  try {
+    const txHash = await walletClient.sendTransaction({
+      account,
+      to: contractAddress as Hex,
+      data: calldata as Hex,
+      value,
+      chain: walletClient.chain,
+    });
+
+    await recordAttempt(telegramId, walletId, contractAddress, chain, "copy", { status: "sent", txHash });
+    return ok({ txHash });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    await recordAttempt(telegramId, walletId, contractAddress, chain, "copy", { status: "failed", errorMessage: message });
+    return err("unknown", `Copy-mint transaction failed: ${message}`, cause);
   }
 }

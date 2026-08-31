@@ -103,7 +103,7 @@ export async function handleCallback(ctx: Context) {
     await ctx.reply(
       "🤖 Freemint-Bot help\n\n" +
         "Send a contract address, or use /scan <address> [chain]\n" +
-        "Chains: ethereum, base, arbitrum, optimism (default: base)\n\n" +
+        "Chains: base, robinhood, ink (default: base)\n\n" +
         "The bot verifies free mints by reading real on-chain state — " +
         "it never guesses from a function's name alone.",
       { reply_markup: backToMainKeyboard() }

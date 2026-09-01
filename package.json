@@ -6,7 +6,8 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "postinstall": "prisma generate",
+    "start": "prisma db push --skip-generate --accept-data-loss && node dist/main.js",
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc --noEmit"
   },

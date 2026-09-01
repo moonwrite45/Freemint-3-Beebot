@@ -216,6 +216,70 @@ async function dryRunMint(
   }
 }
 
+/**
+ * A price() (or similar) reading zero only proves the mint WAS free —
+ * it says nothing about whether minting is still open right now. An old
+ * project that was free at launch can have price() permanently return 0
+ * forever after the mint actually ended, sold out, or got paused. This
+ * checks the common signals for "is it still open" beyond price alone,
+ * so a stale price==0 read doesn't get reported as a live free mint.
+ *
+ * Deliberately conservative: if a contract exposes none of these signals,
+ * this returns ok(null) — absence of a pause/supply check is NOT treated
+ * as evidence of anything, only an explicit "closed" signal is.
+ */
+async function checkMintStillOpen(client: PublicClient, address: Address, abi: Abi): Promise<Result<null>> {
+  const fns = abi as unknown as AbiFn[];
+  const isViewNoArgs = (f: AbiFn) =>
+    f.type === "function" && (f.stateMutability === "view" || f.stateMutability === "pure") && (f.inputs?.length ?? 0) === 0;
+
+  const activeFlagNames = new Set(["saleactive", "mintactive", "mintingactive", "ispublicsaleactive", "publicsaleactive", "mintenabled", "saleisactive", "isactive"]);
+  const pausedFlagNames = new Set(["paused", "ispaused"]);
+
+  for (const f of fns.filter(isViewNoArgs)) {
+    const lower = (f.name || "").toLowerCase();
+    const isPausedFlag = pausedFlagNames.has(lower);
+    const isActiveFlag = activeFlagNames.has(lower);
+    if (!isPausedFlag && !isActiveFlag) continue;
+
+    try {
+      const value = await client.readContract({
+        address,
+        abi: [f] as unknown as Abi,
+        functionName: f.name!,
+        args: [],
+      } as any);
+      if (typeof value !== "boolean") continue;
+      const meansOpen = isPausedFlag ? value === false : value === true;
+      if (!meansOpen) {
+        return err("gated", `${f.name}() reports minting is not currently open`);
+      }
+    } catch {
+      // Couldn't read it — don't conclude anything from a failed read either way.
+    }
+  }
+
+  const supplyFn = fns.find((f) => isViewNoArgs(f) && (f.name || "").toLowerCase() === "totalsupply");
+  const maxSupplyFn = fns.find(
+    (f) => isViewNoArgs(f) && ["maxsupply", "max_supply", "totalmaxsupply"].includes((f.name || "").toLowerCase())
+  );
+  if (supplyFn && maxSupplyFn) {
+    try {
+      const [total, max] = await Promise.all([
+        client.readContract({ address, abi: [supplyFn] as unknown as Abi, functionName: supplyFn.name!, args: [] } as any),
+        client.readContract({ address, abi: [maxSupplyFn] as unknown as Abi, functionName: maxSupplyFn.name!, args: [] } as any),
+      ]);
+      if (typeof total === "bigint" && typeof max === "bigint" && max > 0n && total >= max) {
+        return err("supply_exhausted", `${supplyFn.name}() (${total}) has reached ${maxSupplyFn.name}() (${max})`);
+      }
+    } catch {
+      // Couldn't read — don't conclude.
+    }
+  }
+
+  return ok(null);
+}
+
 async function getBytecode(client: PublicClient, address: Address): Promise<Result<Hex>> {
   try {
     const code = await client.getBytecode({ address });
@@ -292,6 +356,19 @@ function abiLooksLikeNft(abi: Abi): boolean {
   return erc721Signals.filter((s) => names.has(s)).length >= 2;
 }
 
+/**
+ * Used by automated discovery (discovery.ts), which has no specific
+ * wallet to probe from — it's finding candidates for every subscriber,
+ * not minting on behalf of one person. This is the well-known "burn"
+ * address: valid, non-zero (some contracts reject address(0) as a
+ * recipient), holds no funds, and this dry-run is read-only (eth_call/
+ * estimateGas) so nothing is ever signed or sent from it. Using this
+ * instead of no probe address at all means background discovery can
+ * reach the strongest verification tier (dry_run_succeeded_with_zero_value)
+ * instead of only ever using the two weaker tiers.
+ */
+export const DEFAULT_PROBE_ADDRESS = "0x000000000000000000000000000000000000dEaD" as Address;
+
 export async function scanContract(
   address: string,
   chain: ChainId = getDefaultChainId(),
@@ -320,26 +397,37 @@ export async function scanContract(
 
   // Try each candidate, best-ranked first, until one verifies as free.
   for (const candidate of candidates) {
-    if (candidate.stateMutability === "payable") {
-      // Payable functions still get a chance via on-chain price read (price
-      // could genuinely be 0 even on a payable function) rather than an
-      // automatic skip.
-    }
-
     const priceResult = await tryReadOnchainPrice(client, checksumAddress, abi);
+    let priceWasZero = false;
+
     if (priceResult.ok && priceResult.value !== null) {
       if (priceResult.value > 0n) continue; // genuinely priced — not free, try next candidate
-      return ok({
-        contractAddress: checksumAddress,
-        isVerified: true,
-        isNft: true,
-        freeMint: {
-          candidate,
-          verifiedBy: "onchain_price_read_zero",
-          gasEstimate: 150_000n, // refined by dry-run below when we have a probe address
-        },
-        candidates,
-      });
+      priceWasZero = true;
+
+      // Bug fix: price==0 alone used to be trusted as "verified free mint,
+      // currently open." It only proves price was ever zero — an old
+      // project can keep price()==0 forever after the mint actually ended,
+      // sold out, or got paused. Check for an explicit closed signal
+      // before trusting this tier as the final answer.
+      const stillOpen = await checkMintStillOpen(client, checksumAddress, abi);
+      if (stillOpen.ok) {
+        return ok({
+          contractAddress: checksumAddress,
+          isVerified: true,
+          isNft: true,
+          freeMint: {
+            candidate,
+            verifiedBy: "onchain_price_read_zero",
+            gasEstimate: 150_000n, // refined by dry-run below when we have a probe address
+          },
+          candidates,
+        });
+      }
+      // Confirmed closed (gated/paused/sold out) via this signal — don't
+      // trust the price tier. Still worth letting a real dry-run (below)
+      // have the final say for THIS candidate if we can attempt one,
+      // since it's definitive and our flag-name heuristic could be wrong
+      // about which flag actually gates this specific function.
     }
 
     if (probeFromAddress && isAddress(probeFromAddress)) {
@@ -365,10 +453,12 @@ export async function scanContract(
       continue;
     }
 
-    // No probe address and no readable price state: fall back to the
-    // conservative signal (non-payable + free name hint), but label it
-    // clearly as the weakest verification tier.
-    if (candidate.stateMutability !== "payable" && candidate.nameLooksFree) {
+    // No probe address available, and either no price signal at all or a
+    // price signal we already determined is closed: fall back to the
+    // conservative name-only signal ONLY if we never found pricing info in
+    // the first place — a confirmed-closed price read is stronger evidence
+    // than a name guess, and must not be overridden by a weaker tier.
+    if (!priceWasZero && candidate.stateMutability !== "payable" && candidate.nameLooksFree) {
       return ok({
         contractAddress: checksumAddress,
         isVerified: true,

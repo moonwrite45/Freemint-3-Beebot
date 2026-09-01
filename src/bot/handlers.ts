@@ -15,7 +15,7 @@ import {
   watchlistKeyboard,
   portfolioKeyboard,
 } from "./keyboards.js";
-import { shortenAddress } from "./format.js";
+import { shortenAddress, codeSpan, escapeHtml } from "./format.js";
 import {
   generateNewWallet,
   importWallet,
@@ -46,8 +46,10 @@ export async function runScan(ctx: Context, address: string, chain: ChainId) {
     const { kind } = result.error;
     const prefix = TERMINAL_NEGATIVE_KINDS.has(kind) ? "🔎" : "⏳";
     await ctx.reply(
-      `${prefix} ${shortenAddress(address)} on ${chainLabel(chain)}\n\n${describeScanError(result.error)}`,
-      { reply_markup: backToMainKeyboard() }
+      `${prefix} ${shortenAddress(address)} on ${chainLabel(chain)}\n${codeSpan(address)}\n\n${escapeHtml(
+        describeScanError(result.error)
+      )}`,
+      { parse_mode: "HTML", reply_markup: backToMainKeyboard() }
     );
     return;
   }
@@ -55,10 +57,10 @@ export async function runScan(ctx: Context, address: string, chain: ChainId) {
   const scan = result.value;
   if (!scan.freeMint) {
     await ctx.reply(
-      `🔎 ${shortenAddress(scan.contractAddress)} on ${chainLabel(chain)}\n\n` +
+      `🔎 ${shortenAddress(scan.contractAddress)} on ${chainLabel(chain)}\n${codeSpan(scan.contractAddress)}\n\n` +
         `Verified NFT contract, but no free mint currently confirmed.\n` +
         `Checked ${scan.candidates.length} mint-like function(s).`,
-      { reply_markup: scanResultKeyboard(scan.contractAddress, chain, false) }
+      { parse_mode: "HTML", reply_markup: scanResultKeyboard(scan.contractAddress, chain, false) }
     );
     return;
   }
@@ -66,12 +68,12 @@ export async function runScan(ctx: Context, address: string, chain: ChainId) {
   const fm = scan.freeMint;
   await ctx.reply(
     `✅ Free mint found!\n\n` +
-      `Contract: ${shortenAddress(scan.contractAddress)}\n` +
+      `Contract: ${shortenAddress(scan.contractAddress)}\n${codeSpan(scan.contractAddress)}\n` +
       `Chain: ${chainLabel(chain)}\n` +
-      `Function: ${fm.candidate.name}(${fm.candidate.args.join(", ")})\n` +
-      `Verified by: ${verifiedByLabel(fm.verifiedBy)}\n` +
+      `Function: ${escapeHtml(fm.candidate.name)}(${escapeHtml(fm.candidate.args.join(", "))})\n` +
+      `Verified by: ${escapeHtml(verifiedByLabel(fm.verifiedBy))}\n` +
       `Est. gas: ${fm.gasEstimate.toString()}`,
-    { reply_markup: scanResultKeyboard(scan.contractAddress, chain, true) }
+    { parse_mode: "HTML", reply_markup: scanResultKeyboard(scan.contractAddress, chain, true) }
   );
 }
 
@@ -114,9 +116,11 @@ function formatPortfolio(holdings: PortfolioHolding[]): string {
     const { walletLabel, walletAddress } = items[0];
     const lines = items.map((h) => {
       const idsPart = h.tokenIds ? ` (#${h.tokenIds.join(", #")})` : "";
-      return `  • ${shortenAddress(h.contractAddress)} on ${chainLabel(h.chain)} — ${h.balance} held${idsPart}`;
+      return `  • ${shortenAddress(h.contractAddress)} on ${chainLabel(h.chain)} — ${h.balance} held${idsPart}\n    ${codeSpan(
+        h.contractAddress
+      )}`;
     });
-    sections.push(`💼 ${walletLabel} (${shortenAddress(walletAddress)})\n${lines.join("\n")}`);
+    sections.push(`💼 ${walletLabel}\n${codeSpan(walletAddress)}\n${lines.join("\n")}`);
   }
 
   return (
@@ -143,8 +147,8 @@ export async function handleText(ctx: Context) {
     try {
       const wallet = await importWallet(telegramId, text);
       await ctx.reply(
-        `✅ Wallet imported: ${wallet.label}\n${wallet.address}`,
-        { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+        `✅ Wallet imported: ${wallet.label}\n${codeSpan(wallet.address)}`,
+        { parse_mode: "HTML", reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
       );
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Import failed.";
@@ -226,7 +230,8 @@ export async function handleCallback(ctx: Context) {
     const [, contractAddress, chain] = addWatchMatch;
     const telegramId = BigInt(ctx.from?.id ?? 0);
     await addToWatchlist(telegramId, contractAddress, chain as ChainId);
-    await ctx.reply(`👁 Added ${shortenAddress(contractAddress)} to your watchlist.`, {
+    await ctx.reply(`👁 Added ${shortenAddress(contractAddress)} to your watchlist.\n${codeSpan(contractAddress)}`, {
+      parse_mode: "HTML",
       reply_markup: scanResultKeyboard(contractAddress, chain as ChainId, false),
     });
     return;
@@ -249,7 +254,7 @@ export async function handleCallback(ctx: Context) {
     const telegramId = BigInt(ctx.from?.id ?? 0);
     await ctx.reply("⏳ Checking real on-chain balances...");
     const holdings = await getPortfolio(telegramId);
-    await ctx.reply(formatPortfolio(holdings), { reply_markup: portfolioKeyboard() });
+    await ctx.reply(formatPortfolio(holdings), { parse_mode: "HTML", reply_markup: portfolioKeyboard() });
     return;
   }
 
@@ -269,10 +274,10 @@ export async function handleCallback(ctx: Context) {
     const telegramId = BigInt(ctx.from?.id ?? 0);
     const wallet = await generateNewWallet(telegramId);
     await ctx.reply(
-      `✅ New wallet created: ${wallet.label}\n${wallet.address}\n\n` +
+      `✅ New wallet created: ${wallet.label}\n${codeSpan(wallet.address)}\n\n` +
         `This wallet is empty — send funds to it before minting anything. ` +
         `Use "⚠️ Export Private Key" from its menu if you ever need to move funds out.`,
-      { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+      { parse_mode: "HTML", reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
     );
     return;
   }
@@ -295,8 +300,8 @@ export async function handleCallback(ctx: Context) {
       return;
     }
     await ctx.reply(
-      `${wallet.isActive ? "🟢" : "⚪"} ${wallet.label}\n${wallet.address}`,
-      { reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
+      `${wallet.isActive ? "🟢" : "⚪"} ${wallet.label}\n${codeSpan(wallet.address)}`,
+      { parse_mode: "HTML", reply_markup: walletDetailKeyboard(wallet.id, wallet.isActive) }
     );
     return;
   }
@@ -331,15 +336,42 @@ export async function handleCallback(ctx: Context) {
   const walletExportConfirmMatch = data.match(/^walletexportconfirm_(.+)$/);
   if (walletExportConfirmMatch) {
     const telegramId = BigInt(ctx.from?.id ?? 0);
+    const walletId = walletExportConfirmMatch[1];
+
+    // Bug fix: this used to wrap getWalletPrivateKey in a try/catch that
+    // reported EVERY possible failure — a genuine decrypt error (bad
+    // ENCRYPTION_KEY, corrupted ciphertext) included — as "Wallet not
+    // found." That's the exact "collapse distinct failures into one
+    // generic message" pattern the rest of this bot was rebuilt to avoid.
+    // Check existence separately first so the two cases are distinguishable.
+    const wallet = await getWalletByIdForUser(telegramId, walletId);
+    if (!wallet) {
+      await ctx.reply("Wallet not found or not owned by you.", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+
     try {
-      const key = await getWalletPrivateKey(telegramId, walletExportConfirmMatch[1]);
+      const key = await getWalletPrivateKey(telegramId, walletId);
       await ctx.reply(
-        `🔑 Private key:\n\`${key}\`\n\n` +
+        `🔑 Private key for ${wallet.label}:\n${codeSpan(key)}\n\n` +
           `Delete this message once you've saved it somewhere safe.`,
-        { parse_mode: "MarkdownV2", reply_markup: backToMainKeyboard() }
+        { parse_mode: "HTML", reply_markup: backToMainKeyboard() }
       );
-    } catch {
-      await ctx.reply("Wallet not found.", { reply_markup: backToMainKeyboard() });
+    } catch (cause) {
+      // The wallet definitely exists (checked above) — so a failure here
+      // is a real decrypt problem, most likely ENCRYPTION_KEY not matching
+      // what was used to encrypt this key. Surfacing it instead of hiding
+      // it is the whole point of this fix.
+      const message = cause instanceof Error ? cause.message : "Decryption failed for an unknown reason.";
+      console.error(`[handlers] private key decrypt failed for wallet ${walletId}:`, cause);
+      await ctx.reply(
+        `❌ Could not decrypt this wallet's key: ${message}\n\n` +
+          `This usually means ENCRYPTION_KEY changed since this wallet was created. ` +
+          `If so, this key is unrecoverable with the current key — the wallet address ` +
+          `is still known, but funds sent to it can only be moved by whoever has the ` +
+          `ORIGINAL ENCRYPTION_KEY.`,
+        { reply_markup: backToMainKeyboard() }
+      );
     }
     return;
   }

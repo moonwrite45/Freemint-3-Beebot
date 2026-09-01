@@ -21,7 +21,14 @@ export function mainMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔍 Scan Contract", "scan_contract").text("👁 Watchlist", "watchlist").row()
     .text("💼 My Wallets", "wallet_menu").text("⚙️ Chains", "menu_chains").row()
+    .text("🖼 My Portfolio", "portfolio_menu").row()
     .text("📖 Help", "menu_help");
+}
+
+export function portfolioKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🔄 Refresh", "portfolio_menu").row()
+    .text("🏠 Main Menu", "main_menu");
 }
 
 export function walletMenuKeyboard(wallets: WalletInfo[]): InlineKeyboard {

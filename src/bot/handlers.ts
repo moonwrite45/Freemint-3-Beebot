@@ -13,6 +13,7 @@ import {
   deleteConfirmKeyboard,
   mintWalletPickKeyboard,
   watchlistKeyboard,
+  portfolioKeyboard,
 } from "./keyboards.js";
 import { shortenAddress } from "./format.js";
 import {
@@ -28,6 +29,7 @@ import { executeMint } from "../core/autoMint.js";
 import { getAutoMintConfig, enableAutoMint } from "../core/autoMintConfig.js";
 import { getSubscribedChains, subscribeToChain, unsubscribeFromChain } from "../core/subscriptions.js";
 import { addToWatchlist, removeFromWatchlist, getWatchlist } from "../core/watchlist.js";
+import { getPortfolio, type PortfolioHolding } from "../core/portfolio.js";
 
 /**
  * Every branch below shows the person a DIFFERENT message depending on
@@ -88,6 +90,39 @@ function verifiedByLabel(v: string): string {
 
 function chainLabel(c: ChainId): string {
   return getChainConfig(c).id;
+}
+
+function formatPortfolio(holdings: PortfolioHolding[]): string {
+  if (holdings.length === 0) {
+    return (
+      "🖼 Your Portfolio\n\n" +
+      "Nothing confirmed yet. Once a mint transaction is mined and " +
+      "succeeds, it'll show up here — verified against real live on-chain " +
+      "balance, not just our own log of what was sent."
+    );
+  }
+
+  const byWallet = new Map<string, PortfolioHolding[]>();
+  for (const h of holdings) {
+    const list = byWallet.get(h.walletId) ?? [];
+    list.push(h);
+    byWallet.set(h.walletId, list);
+  }
+
+  const sections: string[] = [];
+  for (const [, items] of byWallet) {
+    const { walletLabel, walletAddress } = items[0];
+    const lines = items.map((h) => {
+      const idsPart = h.tokenIds ? ` (#${h.tokenIds.join(", #")})` : "";
+      return `  • ${shortenAddress(h.contractAddress)} on ${chainLabel(h.chain)} — ${h.balance} held${idsPart}`;
+    });
+    sections.push(`💼 ${walletLabel} (${shortenAddress(walletAddress)})\n${lines.join("\n")}`);
+  }
+
+  return (
+    `🖼 Your Portfolio\n\n${sections.join("\n\n")}\n\n` +
+    `Holdings verified live on-chain just now — not just from mint history.`
+  );
 }
 
 export async function handleText(ctx: Context) {
@@ -207,6 +242,14 @@ export async function handleCallback(ctx: Context) {
       items.length ? "👁 Your watchlist:" : "👁 Watchlist is now empty.",
       { reply_markup: watchlistKeyboard(items.map((i) => ({ address: i.contractAddress, chain: i.chain }))) }
     );
+    return;
+  }
+
+  if (data === "portfolio_menu") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await ctx.reply("⏳ Checking real on-chain balances...");
+    const holdings = await getPortfolio(telegramId);
+    await ctx.reply(formatPortfolio(holdings), { reply_markup: portfolioKeyboard() });
     return;
   }
 

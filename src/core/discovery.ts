@@ -9,7 +9,7 @@
  * tracker), instead of each watcher polling the RPC independently.
  */
 
-import { scanContract } from "./scanner.js";
+import { scanContract, DEFAULT_PROBE_ADDRESS } from "./scanner.js";
 import { MINT_SELECTORS, type ChainWatcher, type TxInfo } from "./listener.js";
 import { SeenContracts, seenKey } from "./queue.js";
 import { getSubscribersForChain } from "./subscriptions.js";
@@ -45,7 +45,13 @@ export function createDiscoveryWatcher(onAlert: AlertCallback): DiscoveryEngine 
     if (seen.has(key)) return;
     seen.add(key);
 
-    const result = await scanContract(contractAddress, chain);
+    // Fix: this used to call scanContract with no probe address at all,
+    // meaning every automated background scan could only ever reach the
+    // two weaker verification tiers (price-read, name-signal) — never the
+    // strongest one (a real dry-run). Passing a fixed, funds-free probe
+    // address costs nothing (dry-run is read-only) and lets background
+    // discovery reach the same strength of verification as a manual scan.
+    const result = await scanContract(contractAddress, chain, DEFAULT_PROBE_ADDRESS);
 
     if (!result.ok) {
       if (result.error.retryable) {

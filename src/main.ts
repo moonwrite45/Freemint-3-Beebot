@@ -8,6 +8,7 @@ import { allChainIds } from "./core/chains.js";
 import { scanResultKeyboard } from "./bot/keyboards.js";
 import { getEnabledAutoMintConfigs, getAutoMintConfig } from "./core/autoMintConfig.js";
 import { executeMint, executeCopyMint } from "./core/autoMint.js";
+import { codeSpan, escapeHtml } from "./bot/format.js";
 
 async function main() {
   const bot = await createBot();
@@ -36,13 +37,16 @@ async function main() {
     const fm = alert.scan.freeMint!;
     const text =
       `✅ Free mint detected!\n\n` +
-      `Contract: ${alert.scan.contractAddress}\n` +
-      `Chain: ${alert.chain}\n` +
-      `Function: ${fm.candidate.name}(${fm.candidate.args.join(", ")})\n` +
-      `Verified by: ${fm.verifiedBy}\n` +
-      `Source: ${alert.source}`;
+      `Contract: ${codeSpan(alert.scan.contractAddress)}\n` +
+      `Chain: ${escapeHtml(alert.chain)}\n` +
+      `Function: ${escapeHtml(fm.candidate.name)}(${escapeHtml(fm.candidate.args.join(", "))})\n` +
+      `Verified by: ${escapeHtml(fm.verifiedBy)}\n` +
+      `Source: ${escapeHtml(alert.source)}`;
 
-    const markup = { reply_markup: scanResultKeyboard(alert.scan.contractAddress, alert.chain, true) };
+    const markup = {
+      parse_mode: "HTML" as const,
+      reply_markup: scanResultKeyboard(alert.scan.contractAddress, alert.chain, true),
+    };
 
     for (let i = 0; i < alert.recipients.length; i += BATCH_SIZE) {
       const batch = alert.recipients.slice(i, i + BATCH_SIZE);
@@ -75,10 +79,10 @@ async function main() {
         batch.map(async (cfg) => {
           const result = await executeMint(cfg.telegramId, cfg.walletId, alert.scan, alert.chain, "auto", cfg.maxGasGwei);
           const text = result.ok
-            ? `⚡ Auto-mint sent!\nContract: ${alert.scan.contractAddress}\nTx: ${result.value.txHash}`
-            : `⚡ Auto-mint skipped for ${alert.scan.contractAddress}: ${result.error.message}`;
+            ? `⚡ Auto-mint sent!\nContract: ${codeSpan(alert.scan.contractAddress)}\nTx: ${codeSpan(result.value.txHash)}`
+            : `⚡ Auto-mint skipped for ${codeSpan(alert.scan.contractAddress)}: ${escapeHtml(result.error.message)}`;
           await bot.api
-            .sendMessage(Number(cfg.telegramId), text)
+            .sendMessage(Number(cfg.telegramId), text, { parse_mode: "HTML" })
             .catch((cause) => console.error(`[main] failed to notify auto-mint result to ${cfg.telegramId}:`, cause));
         })
       );
@@ -102,7 +106,10 @@ async function main() {
     await bot.api
       .sendMessage(
         Number(event.telegramId),
-        `👀 ${event.tracked.label} (tracked wallet) just minted:\nContract: ${event.contractAddress}\nChain: ${event.chain}\nTx: ${event.txHash}`
+        `👀 ${escapeHtml(event.tracked.label)} (tracked wallet) just minted:\nContract: ${codeSpan(
+          event.contractAddress
+        )}\nChain: ${escapeHtml(event.chain)}\nTx: ${codeSpan(event.txHash)}`,
+        { parse_mode: "HTML" }
       )
       .catch((cause) => console.error(`[main] failed to notify copy-mint watch event to ${event.telegramId}:`, cause));
 
@@ -131,11 +138,13 @@ async function main() {
     );
 
     const text = result.ok
-      ? `⚡ Copied ${event.tracked.label}'s mint!\nContract: ${event.contractAddress}\nTx: ${result.value.txHash}`
-      : `⚡ Copy-mint failed for ${event.tracked.label}: ${result.error.message}`;
+      ? `⚡ Copied ${escapeHtml(event.tracked.label)}'s mint!\nContract: ${codeSpan(event.contractAddress)}\nTx: ${codeSpan(
+          result.value.txHash
+        )}`
+      : `⚡ Copy-mint failed for ${escapeHtml(event.tracked.label)}: ${escapeHtml(result.error.message)}`;
 
     await bot.api
-      .sendMessage(Number(event.telegramId), text)
+      .sendMessage(Number(event.telegramId), text, { parse_mode: "HTML" })
       .catch((cause) => console.error(`[main] failed to notify copy-mint result to ${event.telegramId}:`, cause));
   }
 

@@ -21,8 +21,36 @@ export function mainMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔍 Scan Contract", "scan_contract").text("👁 Watchlist", "watchlist").row()
     .text("💼 My Wallets", "wallet_menu").text("⚙️ Chains", "menu_chains").row()
-    .text("🖼 My Portfolio", "portfolio_menu").row()
+    .text("🖼 My Portfolio", "portfolio_menu").text("🎯 Tracking", "tracking_menu").row()
+    .text("🛡 Settings / Gas", "settings_menu").row()
     .text("📖 Help", "menu_help");
+}
+
+export function trackingKeyboard(tracked: { trackedAddress: string; label: string; autoCopy: boolean }[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const t of tracked) {
+    kb.text(`${t.autoCopy ? "⚡" : "👁"} ${t.label}`, `trackview_${t.trackedAddress}`).row();
+  }
+  kb.text("➕ Track New Wallet", "track_new").row();
+  kb.text("🏠 Main Menu", "main_menu");
+  return kb;
+}
+
+export function trackedWalletKeyboard(address: string, autoCopy: boolean): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (autoCopy) {
+    kb.text("⏸ Turn Off Auto-Copy", `copyoff_${address}`).row();
+  } else {
+    kb.text("⚡ Turn On Auto-Copy", `copyonprompt_${address}`).row();
+  }
+  kb.text("🗑 Untrack", `untrack_${address}`).row();
+  kb.text("🎯 Back to Tracking", "tracking_menu").text("🏠 Main Menu", "main_menu");
+  return kb;
+}
+
+export function settingsKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🏠 Main Menu", "main_menu");
 }
 
 export function portfolioKeyboard(): InlineKeyboard {

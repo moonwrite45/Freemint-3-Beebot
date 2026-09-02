@@ -14,8 +14,12 @@ import {
   mintWalletPickKeyboard,
   watchlistKeyboard,
   portfolioKeyboard,
+  trackingKeyboard,
+  trackedWalletKeyboard,
+  settingsKeyboard,
 } from "./keyboards.js";
 import { shortenAddress, codeSpan, escapeHtml } from "./format.js";
+import { listTrackedWallets, untrackWallet, setAutoCopy } from "../core/copyMint.js";
 import {
   generateNewWallet,
   importWallet,
@@ -255,6 +259,107 @@ export async function handleCallback(ctx: Context) {
     await ctx.reply("⏳ Checking real on-chain balances...");
     const holdings = await getPortfolio(telegramId);
     await ctx.reply(formatPortfolio(holdings), { parse_mode: "HTML", reply_markup: portfolioKeyboard() });
+    return;
+  }
+
+  if (data === "tracking_menu") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const tracked = await listTrackedWallets(telegramId);
+    await ctx.reply(
+      tracked.length
+        ? "🎯 Wallets you're tracking:"
+        : "🎯 Not tracking anyone yet. Track a wallet to get notified whenever it mints — and optionally auto-copy it.",
+      { reply_markup: trackingKeyboard(tracked) }
+    );
+    return;
+  }
+
+  if (data === "track_new") {
+    // Deliberately just points at the command rather than capturing the
+    // next free-text message: a tracked wallet address and a contract to
+    // scan look identical (0x + 40 hex) with no way to tell them apart
+    // from format alone, and handleText already treats bare addresses as
+    // scan requests. Ambiguity here would silently do the wrong thing.
+    await ctx.reply(
+      "Use /track <wallet address> [label] to start tracking a wallet.\n" +
+        "Example: /track 0xAbC...123 MyWhale",
+      { reply_markup: backToMainKeyboard() }
+    );
+    return;
+  }
+
+  const trackViewMatch = data.match(/^trackview_(0x[a-fA-F0-9]{40})$/);
+  if (trackViewMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const address = trackViewMatch[1];
+    const tracked = await listTrackedWallets(telegramId);
+    const entry = tracked.find((t) => t.trackedAddress.toLowerCase() === address.toLowerCase());
+    if (!entry) {
+      await ctx.reply("Not tracking that wallet (anymore).", { reply_markup: backToMainKeyboard() });
+      return;
+    }
+    const maxSpend = entry.maxSpendWei ? `${Number(BigInt(entry.maxSpendWei)) / 1e18} ETH cap` : "no cap set";
+    await ctx.reply(
+      `${entry.autoCopy ? "⚡" : "👁"} ${entry.label}\n${codeSpan(entry.trackedAddress)}\n\n` +
+        `Auto-copy: ${entry.autoCopy ? `ON (${maxSpend})` : "OFF (watch-only)"}`,
+      { parse_mode: "HTML", reply_markup: trackedWalletKeyboard(entry.trackedAddress, entry.autoCopy) }
+    );
+    return;
+  }
+
+  const untrackMatch = data.match(/^untrack_(0x[a-fA-F0-9]{40})$/);
+  if (untrackMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    await untrackWallet(telegramId, untrackMatch[1]);
+    const tracked = await listTrackedWallets(telegramId);
+    await ctx.reply(
+      tracked.length ? "🎯 Wallets you're tracking:" : "🎯 Untracked. Nothing left on your tracking list.",
+      { reply_markup: trackingKeyboard(tracked) }
+    );
+    return;
+  }
+
+  const copyOffMatch = data.match(/^copyoff_(0x[a-fA-F0-9]{40})$/);
+  if (copyOffMatch) {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const address = copyOffMatch[1];
+    await setAutoCopy(telegramId, address, false, null);
+    await ctx.reply("⏸ Auto-copy turned off for this wallet — still watch-only tracked.", {
+      reply_markup: trackedWalletKeyboard(address, false),
+    });
+    return;
+  }
+
+  const copyOnPromptMatch = data.match(/^copyonprompt_(0x[a-fA-F0-9]{40})$/);
+  if (copyOnPromptMatch) {
+    // Same reasoning as track_new: turning auto-copy on needs a spend cap
+    // (a number) that only makes sense typed as a command argument.
+    await ctx.reply(
+      `Use /copyon ${copyOnPromptMatch[1]} <maxSpendEth> to turn on auto-copy.\n` +
+        `Example: /copyon ${copyOnPromptMatch[1]} 0.01`,
+      { reply_markup: backToMainKeyboard() }
+    );
+    return;
+  }
+
+  if (data === "settings_menu") {
+    const telegramId = BigInt(ctx.from?.id ?? 0);
+    const cfg = await getAutoMintConfig(telegramId);
+    let walletLabel = cfg?.walletId ?? "";
+    if (cfg?.enabled) {
+      const wallet = await getWalletByIdForUser(telegramId, cfg.walletId);
+      walletLabel = wallet ? `${wallet.label} (${shortenAddress(wallet.address)})` : "(wallet no longer found)";
+    }
+    await ctx.reply(
+      "🛡 Settings / Gas\n\n" +
+        (cfg?.enabled
+          ? `Auto-mint wallet: ${walletLabel}\nGas cap: ${cfg.maxGasGwei ? `${cfg.maxGasGwei} gwei` : "none set"}\n\n` +
+            `Change with /setgaslimit <gwei>. Turn off auto-mint entirely with /automintoff.`
+          : "Auto-mint is currently OFF — no gas cap applies since nothing is auto-sending.\n\n" +
+            "Enable auto-mint on a wallet first (💼 My Wallets → pick a wallet → ⚡ Use for Auto-Mint), " +
+            "then set a cap with /setgaslimit <gwei>."),
+      { reply_markup: settingsKeyboard() }
+    );
     return;
   }
 
